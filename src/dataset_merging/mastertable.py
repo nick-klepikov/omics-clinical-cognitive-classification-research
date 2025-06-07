@@ -1,6 +1,7 @@
 import pandas as pd  # pandas: library for data manipulation and analysis
 import re  # re: Python’s regular‐expression module, used for pattern matching
 from pandas_plink import read_plink
+import numpy as np
 import glob
 import os
 
@@ -46,7 +47,7 @@ if "EVENT_ID" in df_clin.columns:
     )
 
 # Decide which clinical columns to keep. We want PATNO plus any columns we need:
-keep_cols = ["PATNO", "EVENT_ID", "subgroup", "age_at_visit", "SEX", "EDUCYRS", "race", "moca", "moca_12m"]
+keep_cols = ["PATNO", "age_at_visit", "SEX", "EDUCYRS", "race", "moca", "moca_12m"]
 # Filter df_clin to include only those columns that actually exist in the DataFrame.
 df_clin = df_clin[[c for c in keep_cols if c in df_clin.columns]].copy()
 #   • This list comprehension chooses only keep_cols that exist, avoiding KeyError.
@@ -87,14 +88,78 @@ keep_samples = fam["iid"].isin(clinic_iids).values
 fam = fam[keep_samples].reset_index(drop=True)
 bed = bed[:, keep_samples]
 
+# --- Compute full genotype matrix once to avoid repeated Dask I/O ---
+full_mat = bed.compute()  # NumPy array shape = (n_variants, n_samples)
+
 #    a) Grab sample IDs in order:
 sample_ids = fam.iid.values.tolist()
 
 #    b) Grab SNP IDs (one column per “snp” in bim):
 snp_ids = bim.snp.values.tolist()
 
+# ----------------- SNP QC before loading full genotype matrix -----------------
+
+# Map snp_ids to their indices in the original bim.snp list
+snp_index_map = {s: idx for idx, s in enumerate(bim.snp.values.tolist())}
+
+# 1) Batch missingness & MAF filter
+batch_size = 10000
+good_snps = []
+for start in range(0, len(snp_ids), batch_size):
+    print(f"[QC: missing+MAF] Batch {start}-{min(start+batch_size, len(snp_ids))} of {len(snp_ids)} SNPs")
+    batch = snp_ids[start:start+batch_size]
+    # load batch of variants x all samples
+    arr = full_mat[[snp_index_map[s] for s in batch], :].T
+    df_batch = pd.DataFrame(arr, columns=batch)
+    # missingness
+    miss = df_batch.isna().mean()
+    keep1 = miss[miss <= 0.05].index.tolist()
+    # MAF
+    p = df_batch[keep1].mean(skipna=True) / 2
+    maf = np.minimum(p, 1-p)
+    keep2 = maf[maf >= 0.01].index.tolist()
+    good_snps.extend(keep2)
+    del df_batch
+
+# dedupe order
+good_snps = list(dict.fromkeys(good_snps))
+
+
+# 2) LD pruning on good_snps
+pruned = []
+WINDOW, STEP, R2 = 50, 5, 0.2
+for i in range(0, len(good_snps), STEP):
+    print(f"[QC: LD prune] Window start {i} of {len(good_snps)} SNPs")
+    window = good_snps[i:i+WINDOW]
+    arr = full_mat[[snp_index_map[s] for s in window], :].T
+    df_window = pd.DataFrame(arr, columns=window)
+    col_means = df_window.mean()
+    df_window = df_window.fillna(col_means)
+
+    # Skip pruning when only one SNP in window
+    if len(window) < 2:
+        pruned.extend(window)
+        continue
+
+    stds = df_window.std(ddof=0).replace(0, 1)
+    G = (df_window - df_window.mean()) / stds
+    corr2 = np.corrcoef(G.values, rowvar=False)**2
+    removed = set()
+    for j, s in enumerate(window):
+        if s in removed:
+            continue
+        pruned.append(s)
+        high = np.where(corr2[j] > R2)[0]
+        for k in high:
+            removed.add(window[k])
+    del df_window
+
+# Final pruned SNP list
+snp_ids = list(dict.fromkeys(pruned))
+print(f"[QC] SNPs reduced to {len(snp_ids)} after missingness, MAF, LD pruning")
+
 #    c) Compute the full genotype matrix in memory (if you have RAM):
-geno_matrix = bed.compute()  # shape = (n_variants, n_samples)
+geno_matrix = full_mat[[snp_index_map[s] for s in snp_ids], :]  # shape = (len(snp_ids), n_samples)
 
 #    d) Transpose so that rows become samples, columns become variants:
 geno_matrix = geno_matrix.T  # now shape = (n_samples, n_variants)
@@ -220,8 +285,6 @@ print(f"[4] Master table final → {len(df_master)} rows, {len(df_master.columns
 # 1) Define which clinical columns to include
 clinical_cols = [
     "PATNO",
-    "EVENT_ID",
-    "subgroup",
     "age_at_visit",
     "SEX",
     "EDUCYRS",
@@ -234,7 +297,8 @@ cognitive_cols_all = [
     "moca",
     "moca_12m"
 ]
-cognitive_cols = [c for c in cognitive_cols_all if c in df_master.columns]
+# Exclude PATNO from cognitive-specific columns to avoid duplication
+cognitive_cols = [c for c in cognitive_cols_all if c in df_master.columns and c != "PATNO"]
 
 # 3) Define transcriptomics columns by taking everything in df_tpm except “PATNO”
 transcriptomics_cols = [col for col in df_tpm.columns if col != "PATNO"]
@@ -249,7 +313,6 @@ genotype_cols = [
     if col not in ("GP2sampleID", "PATNO")
 ]
 
-exit(0)
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 5) Build and save: GENOTYPE + CLINICAL
@@ -258,32 +321,33 @@ df_geno_clin = df_master[clinical_cols + genotype_cols]
 
 print("[DEBUG] About to write geno_plus_clinical.csv with shape:", df_geno_clin.shape)
 df_geno_clin.to_csv(
-    "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/processed/geno_plus_clinical.csv",
+    "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_unprocessed/geno_plus_clinical.csv",
     index=False
 )
-print("[5] Written geno_plus_clinical.csv")
+print(f"[5] Written geno_plus_clinical.csv ({df_geno_clin.shape[0]} samples)")
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 6) Build and save: TRANSCRIPTOMICS + CLINICAL
 # ────────────────────────────────────────────────────────────────────────────────
 df_rna_clin = df_master[clinical_cols + transcriptomics_cols]
 df_rna_clin.to_csv(
-    "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/processed/rna_plus_clinical.csv",
+    "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_unprocessed/rna_plus_clinical.csv",
     index=False
 )
-print("[6] Written rna_plus_clinical.csv")
+print(f"[6] Written rna_plus_clinical.csv ({df_rna_clin.shape[0]} samples)")
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 7) Build and save: COGNITIVE + CLINICAL
 # ────────────────────────────────────────────────────────────────────────────────
+# clinical_cols already contains "PATNO", so this selection will list PATNO only once.
 df_cog_clin = df_master[clinical_cols + cognitive_cols]
 df_cog_clin.to_csv(
-    "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/processed/cognitive_plus_clinical.csv",
+    "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_unprocessed/cognitive_plus_clinical.csv",
     index=False
 )
-print("[7] Written cognitive_plus_clinical.csv")
+print(f"[7] Written cognitive_plus_clinical.csv ({df_cog_clin.shape[0]} samples)")
 
 print("Wrote three CSVs to data/processed/:")
-print("  • geno_plus_clinical.csv")
-print("  • rna_plus_clinical.csv")
-print("  • cognitive_plus_clinical.csv")
+print(f"  • geno_plus_clinical.csv: {df_geno_clin.shape[0]} samples")
+print(f"  • rna_plus_clinical.csv: {df_rna_clin.shape[0]} samples")
+print(f"  • cognitive_plus_clinical.csv: {df_cog_clin.shape[0]} samples")
