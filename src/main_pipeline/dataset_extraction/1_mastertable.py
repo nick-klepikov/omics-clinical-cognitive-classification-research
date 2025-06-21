@@ -4,6 +4,7 @@ from pandas_plink import read_plink
 import numpy as np
 import glob
 import os
+from scipy.stats import pearsonr
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 1) Load Clinical & Cognitive data
@@ -45,9 +46,13 @@ if "EVENT_ID" in df_clin.columns:
         on="PATNO",
         how="left"
     )
-
+    # Drop any subjects missing either baseline or 12m MoCA
+    df_clin = df_clin.dropna(subset=["moca", "moca_12m"]).reset_index(drop=True)
+    df_clin["moca"] = pd.to_numeric(df_clin["moca"], errors="coerce")
+    df_clin["moca_12m"] = pd.to_numeric(df_clin["moca_12m"], errors="coerce")
+    df_clin["moca_change"] = df_clin["moca_12m"] - df_clin["moca"]
 # Decide which clinical columns to keep. We want PATNO plus any columns we need:
-keep_cols = ["PATNO", "age_at_visit", "SEX", "EDUCYRS", "race", "moca", "moca_12m"]
+keep_cols = ["PATNO", "age_at_visit", "SEX", "EDUCYRS", "moca_change"]
 # Filter df_clin to include only those columns that actually exist in the DataFrame.
 df_clin = df_clin[[c for c in keep_cols if c in df_clin.columns]].copy()
 #   • This list comprehension chooses only keep_cols that exist, avoiding KeyError.
@@ -288,17 +293,12 @@ clinical_cols = [
     "age_at_visit",
     "SEX",
     "EDUCYRS",
-    "race"
 ]
 
 # 2) Define cognitive‐score columns (only those that actually exist in df_master)
 cognitive_cols_all = [
-    "PATNO",
-    "moca",
-    "moca_12m"
+    "moca_change"
 ]
-# Exclude PATNO from cognitive-specific columns to avoid duplication
-cognitive_cols = [c for c in cognitive_cols_all if c in df_master.columns and c != "PATNO"]
 
 # 3) Define transcriptomics columns by taking everything in df_tpm except “PATNO”
 transcriptomics_cols = [col for col in df_tpm.columns if col != "PATNO"]
@@ -313,12 +313,25 @@ genotype_cols = [
     if col not in ("GP2sampleID", "PATNO")
 ]
 
+# --- Univariate SNP filtering by correlation with moca_change ---
+corr_vals = {}
+for snp in genotype_cols:
+    mask = df_master[snp].notna() & df_master["moca_change"].notna()
+    if mask.sum() > 2:
+        r, _ = pearsonr(df_master.loc[mask, snp], df_master.loc[mask, "moca_change"])
+        corr_vals[snp] = abs(r)
+    else:
+        corr_vals[snp] = 0.0
+# Select top 1000 by |r|
+top_snps = sorted(corr_vals, key=corr_vals.get, reverse=True)[:1000]
+genotype_cols = top_snps
+print(f"[QS] Univariate SNP filter → retained {len(genotype_cols)} SNPs (top 1000 by |r|)")
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 5) Build and save: GENOTYPE + CLINICAL
 # ────────────────────────────────────────────────────────────────────────────────
-df_geno_clin = df_master[clinical_cols + genotype_cols]
-
+df_geno_clin = df_master[clinical_cols + ["moca_change"] + genotype_cols]
 print("[DEBUG] About to write geno_plus_clinical.csv with shape:", df_geno_clin.shape)
 df_geno_clin.to_csv(
     "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_unprocessed/geno_plus_clinical.csv",
@@ -329,25 +342,13 @@ print(f"[5] Written geno_plus_clinical.csv ({df_geno_clin.shape[0]} samples)")
 # ────────────────────────────────────────────────────────────────────────────────
 # 6) Build and save: TRANSCRIPTOMICS + CLINICAL
 # ────────────────────────────────────────────────────────────────────────────────
-df_rna_clin = df_master[clinical_cols + transcriptomics_cols]
+df_rna_clin = df_master[clinical_cols + ["moca_change"] + transcriptomics_cols]
 df_rna_clin.to_csv(
     "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_unprocessed/rna_plus_clinical.csv",
     index=False
 )
 print(f"[6] Written rna_plus_clinical.csv ({df_rna_clin.shape[0]} samples)")
 
-# ────────────────────────────────────────────────────────────────────────────────
-# 7) Build and save: COGNITIVE + CLINICAL
-# ────────────────────────────────────────────────────────────────────────────────
-# clinical_cols already contains "PATNO", so this selection will list PATNO only once.
-df_cog_clin = df_master[clinical_cols + cognitive_cols]
-df_cog_clin.to_csv(
-    "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_unprocessed/cognitive_plus_clinical.csv",
-    index=False
-)
-print(f"[7] Written cognitive_plus_clinical.csv ({df_cog_clin.shape[0]} samples)")
-
-print("Wrote three CSVs to data/processed/:")
+print("Wrote two CSVs to data/processed/:")
 print(f"  • geno_plus_clinical.csv: {df_geno_clin.shape[0]} samples")
-print(f"  • rna_plus_clinical.csv: {df_rna_clin.shape[0]} samples")
-print(f"  • cognitive_plus_clinical.csv: {df_cog_clin.shape[0]} samples")
+print(f"  • rna_plus_clinicale.csv: {df_rna_clin.shape[0]} samples")
