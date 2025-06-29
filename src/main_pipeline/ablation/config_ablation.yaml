@@ -1,0 +1,15 @@
+# Project/run identifiers
+project: regression_pd
+run_name: local-run
+
+# Model and training hyperparameters
+n_folds:             5
+n_epochs:            250
+lr:                   0.005
+weight_decay:         0.0001
+cl1_hidden_units:     32
+cl2_hidden_units:     8
+ll_out_units:         1
+dropout:              0.5
+lrscheduler_factor:   0.5
+heads: 3

@@ -1290,8 +1290,9 @@ def get_feature_importance(explanation, feat_labels=None, top_k=None):
     score = node_mask.sum(dim=0).cpu().numpy()
 
     if top_k is not None:
-        top_features_labels = feat_labels[:top_k]
-        importance_scores = score[:top_k]
+        sorted_indices = np.argsort(score)[::-1][:top_k]
+        importance_scores = score[sorted_indices]
+        top_features_labels = [feat_labels[i] for i in sorted_indices]
     else:
         top_features_labels = feat_labels
         importance_scores = score

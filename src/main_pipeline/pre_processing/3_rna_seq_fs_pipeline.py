@@ -10,6 +10,7 @@ from smogn.smoter import smoter
 from sklearn.linear_model import Lasso
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils import resample
+import joblib
 
 # Log2(+1) transformation for gene features
 def log2_plus_one(X):
@@ -132,7 +133,7 @@ class EnLassoTransformer(BaseEstimator, TransformerMixin):
         return X[:, self.selected_idx_]
 
 # 1) Load your training DataFrame
-df_train = pd.read_csv('/Users/nickq/Documents/Pioneer Academics/Research_Project/data/data_splits/initial_split/train_data.csv')
+df_train = pd.read_csv('/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/rna_plus_clinical_final.csv')
 ids = df_train['PATNO'].values
 
 # 2) Identify columns
@@ -169,7 +170,7 @@ preprocessor = ColumnTransformer(transformers=[
 fs_pipe = Pipeline([
     ('pre',      preprocessor),  # impute, log2, scale
     ('pearson',  PearsonFilter(k=1000)),  # select top 1000 by Pearson correlation
-    ('enlasso',  EnLassoTransformer(n_runs=100, alpha=0.01, top_k=200, random_state=42)),  # SMOGN + Lasso stability selection with fixed seed
+    ('enlasso',  EnLassoTransformer(n_runs=100, alpha=0.01, top_k=20, random_state=42)),  # SMOGN + Lasso stability selection with fixed seed
 ])
 
 # 5) Fit
@@ -184,6 +185,37 @@ feat_after_pearson = [all_features[i] for i in pearson_idx]
 
 enlasso_idx = fs_pipe.named_steps['enlasso'].selected_idx_
 selected_features = [feat_after_pearson[i] for i in enlasso_idx]
+
+# Clinical columns
+rna_only_cont = [c for c in ['age_at_visit', 'EDUCYRS'] if c in selected_features]
+rna_only_binary = [c for c in ['SEX_M'] if c in selected_features]
+# rna-seq columns selected by EnLasso
+rna_only_rna_seq = [c for c in selected_features if c not in rna_only_cont + rna_only_binary]
+
+# Build transformer on exactly those columns
+rna_and_clin_pre = ColumnTransformer(transformers=[
+    ('cont', Pipeline([
+        ('impute', SimpleImputer(strategy='mean')),
+        ('scale', StandardScaler())
+    ]), rna_only_cont),
+    ('bin', SimpleImputer(strategy='most_frequent'), rna_only_binary),
+    ('genes', Pipeline([
+        ('imp0', SimpleImputer(strategy='constant', fill_value=0)),
+        ('log2', FunctionTransformer(log2_plus_one, validate=True)),
+        ('scale', StandardScaler())
+    ]), rna_only_rna_seq),
+], remainder='drop')
+
+# Fit on the training subset of those columns
+X_train_sel = df_train[rna_only_cont + rna_only_binary + rna_only_rna_seq]
+rna_and_clin_pre.fit(X_train_sel)
+
+# Export this fitted SNP-only preprocessor
+rna_path = "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/preprocessing_pipeline/rna_and_clin_prep.joblib"
+joblib.dump(rna_and_clin_pre, rna_path)
+print(f"Saved RNA-only preprocessor to {rna_path}")
+
+
 
 # Transform training data
 X_train_trans = fs_pipe.transform(X_train)

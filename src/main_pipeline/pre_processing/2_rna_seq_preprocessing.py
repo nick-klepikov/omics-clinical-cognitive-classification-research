@@ -13,11 +13,8 @@ def main():
     df = pd.read_csv(INPUT_CSV, dtype={"PATNO": str})
     print(f"[1] Loaded data: {df.shape[0]} samples, {df.shape[1]} columns")
 
-    # 2) Encode SEX as binary flag
-    df["SEX_M"] = df["SEX"].astype(int)
-    df = df.drop(columns=["SEX"], errors="ignore")
 
-    # 3) Identify column groups
+    # 2) Identify column groups
     clinical_cont = ["age_at_visit", "EDUCYRS"]
     cognitive_cont = ["moca_change"]
     clinical_bin = ["SEX_M"]
@@ -28,21 +25,21 @@ def main():
     print(f"[3] Identified {len(gene_cols)} gene columns")
 
     # --- Transcriptomics QC ---
-    # 4) Drop genes with >5% missing values
+    # 3) Drop genes with >5% missing values
     expr = df[gene_cols]
     keep = expr.columns[expr.isna().mean() <= 0.05]
     df = df[["PATNO"] + clinical_cont + clinical_bin + cognitive_cont + keep.tolist()]
     gene_cols = keep.tolist()
     print(f"[3] QC1 missingness → {len(gene_cols)} genes")
 
-    # 5) Drop genes with TPM <1 in >80% samples
+    # 4) Drop genes with TPM <1 in >80% samples
     expr = df[gene_cols]
     keep = expr.columns[(expr >= 1).sum() >= 0.2 * len(df)]
     df = df[["PATNO"] + clinical_cont + clinical_bin + cognitive_cont + keep.tolist()]
     gene_cols = keep.tolist()
     print(f"[4] QC2 low-expression → {len(gene_cols)} genes")
 
-    # 6) Remove one of any gene pair with |r| > 0.9
+    # 5) Remove one of any gene pair with |r| > 0.9
     corr = df[gene_cols].corr().abs()
     upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
     drop = [c for c in upper.columns if any(upper[c] > 0.9)]

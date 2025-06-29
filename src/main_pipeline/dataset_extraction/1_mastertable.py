@@ -5,6 +5,7 @@ import numpy as np
 import glob
 import os
 from scipy.stats import pearsonr
+from sklearn.model_selection import train_test_split
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 1) Load Clinical & Cognitive data
@@ -56,6 +57,13 @@ keep_cols = ["PATNO", "age_at_visit", "SEX", "EDUCYRS", "moca_change"]
 # Filter df_clin to include only those columns that actually exist in the DataFrame.
 df_clin = df_clin[[c for c in keep_cols if c in df_clin.columns]].copy()
 #   • This list comprehension chooses only keep_cols that exist, avoiding KeyError.
+
+# Step: encode SEX as a single binary column SEX_M (1 = male, 0 = female/other)
+if 'SEX' in df_clin.columns:
+    df_clin["SEX_M"] = df_clin["SEX"].astype(int)
+    df_clin = df_clin.drop(columns=["SEX"], errors="ignore")
+    print("Encoded SEX → SEX_M column added")
+
 print(f"[1] Clinical → {len(df_clin)} rows, {len(df_clin.columns)} columns after filtering")
 clinic_patnos = set(df_clin["PATNO"])
 
@@ -286,12 +294,37 @@ df_master = pd.merge(
 )
 print(f"[4] Master table final → {len(df_master)} rows, {len(df_master.columns)} columns")
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Initial train/test split on df_master (before supervised filtering)
+# ────────────────────────────────────────────────────────────────────────────────
+
+# Create a stratification bin for the continuous target
+bins = [-float('inf'), -3, -1, 0, float('inf')]
+labels = ['large', 'moderate', 'slight', 'no_change']
+df_master['y_bin'] = pd.cut(df_master['moca_change'], bins=bins, labels=labels)
+
+# Split off 10% as held-out test set
+df_train, df_test = train_test_split(
+    df_master,
+    test_size=0.1,
+    random_state=42,
+    shuffle=True,
+    stratify=df_master['y_bin']
+)
+
+# Drop the helper column
+df_train = df_train.drop(columns=['y_bin']).reset_index(drop=True)
+df_test  = df_test.drop(columns=['y_bin']).reset_index(drop=True)
+
+# Use df_train for all subsequent filtering steps
+df_master = df_train
+
 
 # 1) Define which clinical columns to include
 clinical_cols = [
     "PATNO",
     "age_at_visit",
-    "SEX",
+    "SEX_M",
     "EDUCYRS",
 ]
 
@@ -352,3 +385,9 @@ print(f"[6] Written rna_plus_clinical.csv ({df_rna_clin.shape[0]} samples)")
 print("Wrote two CSVs to data/processed/:")
 print(f"  • geno_plus_clinical.csv: {df_geno_clin.shape[0]} samples")
 print(f"  • rna_plus_clinicale.csv: {df_rna_clin.shape[0]} samples")
+
+# Save the held-out test set for downstream evaluation
+df_test.to_csv(
+    os.path.join("/Users/nickq/Documents/Pioneer Academics/Research_Project/data/data_splits/initial_split", "test_data.csv"),
+    index=False
+)

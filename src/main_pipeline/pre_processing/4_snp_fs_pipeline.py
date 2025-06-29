@@ -14,6 +14,8 @@ from smogn.smoter import smoter
 from sklearn.linear_model import Lasso
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils import resample
+import joblib
+
 
 class EnLassoTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, n_runs=100, alpha=0.01, top_k=200, random_state=None):
@@ -48,7 +50,7 @@ class EnLassoTransformer(BaseEstimator, TransformerMixin):
         # 1 = moderate decline: -3 ≤ Δ < -1
         # 2 = slight decline/no change: -1 ≤ Δ ≤ 0
         # 3 = improvement: Δ > 0
-        bins  = [-np.inf, -3, -1, 0, np.inf]
+        bins = [-np.inf, -3, -1, 0, np.inf]
         labels = [0, 1, 2, 3]
         y_bin = pd.cut(df['moca_change'], bins=bins, labels=labels).astype(int)
 
@@ -56,7 +58,7 @@ class EnLassoTransformer(BaseEstimator, TransformerMixin):
 
         # Accumulators for selection frequency and weight sums
         selection_counts = np.zeros(n_feats)
-        weight_sums      = np.zeros(n_feats)
+        weight_sums = np.zeros(n_feats)
 
         # 5-fold stratified SMOGN + Lasso
         for train_idx, _ in skf.split(X, y_bin):
@@ -69,7 +71,7 @@ class EnLassoTransformer(BaseEstimator, TransformerMixin):
 
             # Bootstrap from the SMOGN output
             for i in range(self.n_runs):
-                print(f"  Bootstrap iteration {i+1}/{self.n_runs} for current fold")
+                print(f"  Bootstrap iteration {i + 1}/{self.n_runs} for current fold")
                 # Bootstrap sample from the SMOGN output
                 boot_idx = resample(np.arange(len(df_res)), replace=True, n_samples=len(df_res), random_state=42)
                 df_boot = df_res.iloc[boot_idx].reset_index(drop=True)
@@ -85,12 +87,12 @@ class EnLassoTransformer(BaseEstimator, TransformerMixin):
 
                 # Accumulate frequency of selection and weight sums
                 selection_counts += (coef > 0).astype(int)
-                weight_sums      += coef
+                weight_sums += coef
 
         # Compute Importance Score per Yang et al.
         FSq = selection_counts / (5 * self.n_runs)
-        FSw = weight_sums      / (5 * self.n_runs)
-        IS  = 0.5 * (FSq + FSw)
+        FSw = weight_sums / (5 * self.n_runs)
+        IS = 0.5 * (FSq + FSw)
 
         # Select top_k features by descending IS
         self.selected_idx_ = np.argsort(IS)[::-1][:self.top_k]
@@ -102,30 +104,14 @@ class EnLassoTransformer(BaseEstimator, TransformerMixin):
         """
         return X[:, self.selected_idx_]
 
-# 1) Load your training DataFrame
-# Load training split with PATNO as string
-df_train = pd.read_csv('/Users/nickq/Documents/Pioneer Academics/Research_Project/data/data_splits/initial_split/train_data.csv', dtype={'PATNO': str})
-print(f"[DEBUG] Initial train split samples: {len(df_train)}")
-ids = df_train['PATNO'].values
 
-# Load full SNP + clinical dataset
-df_snp_full = pd.read_csv(
+# 1) Load SNP + clinical training data direct from combined CSV
+df_train = pd.read_csv(
     '/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_unprocessed/geno_plus_clinical.csv',
     dtype={'PATNO': str}
 )
-
-# Subset SNP table to training PATNOs and merge by PATNO
-df_snp_train = df_snp_full[df_snp_full['PATNO'].isin(df_train['PATNO'])].reset_index(drop=True)
-print(f"[DEBUG] SNP table samples matching train PATNOs: {len(df_snp_train)}")
-missing = set(df_train['PATNO']) - set(df_snp_train['PATNO'])
-if missing:
-    print(f"[DEBUG] PATNOs in train split with no SNP match: {sorted(list(missing))[:5]}{'...' if len(missing)>5 else ''}")
-
-# Drop clinical/cognitive columns from SNP DataFrame to avoid duplication
-df_snp_train = df_snp_train.drop(columns=['age_at_visit', 'SEX_M', 'EDUCYRS', 'moca_change'], errors='ignore')
-df_train = pd.merge(df_train, df_snp_train, on='PATNO', how='inner')
-print(f"[DEBUG] df_train shape after SNP merge: {df_train.shape}")
-
+print(f"[DEBUG] Loaded {len(df_train)} training rows from geno_plus_clinical.csv")
+ids = df_train['PATNO'].values
 
 # 2) Identify columns
 target_col = 'moca_change'
@@ -160,16 +146,16 @@ preprocessor = ColumnTransformer(transformers=[
 
     # c) Impute SNP dosage features, then z-score
     ('snps', Pipeline([
-        ('imp0',   SimpleImputer(strategy='constant', fill_value=0)),
-        ('scale',  StandardScaler())
+        ('imp0', SimpleImputer(strategy='constant', fill_value=0)),
+        ('scale', StandardScaler())
     ]), snp_cols),
 ],
     remainder='drop')  # drop any other columns
 
 # 4) Wrap into a Pipeline
 fs_pipe = Pipeline([
-    ('pre',     preprocessor),
-    ('enlasso', EnLassoTransformer(n_runs=100, alpha=0.01, top_k=200, random_state=42)),
+    ('pre', preprocessor),
+    ('enlasso', EnLassoTransformer(n_runs=100, alpha=0.01, top_k=20, random_state=42)),
 ])
 
 # 5) Fit
@@ -181,6 +167,29 @@ fs_pipe.fit(X_train, y_train)
 enlasso_idx = fs_pipe.named_steps['enlasso'].selected_idx_
 selected_features = [all_features[i] for i in enlasso_idx]
 
+# Clinical columns
+snp_only_cont = [c for c in ['age_at_visit', 'EDUCYRS'] if c in selected_features]
+snp_only_binary = [c for c in ['SEX_M'] if c in selected_features]
+# SNP columns selected by EnLasso
+snp_only_snps = [c for c in selected_features if c not in snp_only_cont + snp_only_binary]
+
+# Build transformer on exactly those columns
+snp_only_pre = ColumnTransformer(transformers=[
+    ('snps', Pipeline([
+        ('imp0', SimpleImputer(strategy='constant', fill_value=0)),
+        ('scale', StandardScaler())
+    ]), snp_only_snps),
+], remainder='drop')
+
+# Fit on the training subset of those columns
+X_train_sel = df_train[snp_only_snps]
+snp_only_pre.fit(X_train_sel)
+
+# Export this fitted SNP-only preprocessor
+snp_only_path = "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/preprocessing_pipeline/snp_prep.joblib"
+joblib.dump(snp_only_pre, snp_only_path)
+print(f"Saved SNP-only preprocessor to {snp_only_path}")
+
 # Transform training data
 X_train_trans = fs_pipe.transform(X_train)
 # Build a DataFrame for transformed features with column names
@@ -190,7 +199,9 @@ df_train_trans.insert(0, 'PATNO', ids)
 df_train_trans.insert(1, 'moca_change', y_train)
 
 # Save transformed training data to CSV
-df_train_trans.to_csv('/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/lasso_output/snp_train_transformed_features.csv', index=False)
+df_train_trans.to_csv(
+    '/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/lasso_output/snp_train_transformed_features.csv',
+    index=False)
 
 # Build DataFrame of final selected features
 df_selected = pd.DataFrame({
@@ -201,5 +212,7 @@ df_selected = pd.DataFrame({
 print("Top selected features:")
 print(df_selected.to_string(index=False))
 # Save the selected features list to CSV for downstream use
-df_selected.to_csv('/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/lasso_output/snp_selected_features.csv', index=False)
+df_selected.to_csv(
+    '/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/lasso_output/snp_selected_features.csv',
+    index=False)
 print("Selected features saved to rna_seq_selected_features.csv")
