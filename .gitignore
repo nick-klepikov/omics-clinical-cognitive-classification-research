@@ -3,8 +3,11 @@ src/proposal_pipeline/
 src/regression_pipeline/
 
 # Python artifacts
-__pycache__/
+**/__pycache__/
 *.py[cod]
+
 
 # Data files you don’t want tracked
 data/
+
+.DS_Store
