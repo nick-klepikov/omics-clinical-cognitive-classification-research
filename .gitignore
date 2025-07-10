@@ -1,0 +1,10 @@
+# ignore old pipelines
+src/proposal_pipeline/
+src/regression_pipeline/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# Data files you don’t want tracked
+data/
