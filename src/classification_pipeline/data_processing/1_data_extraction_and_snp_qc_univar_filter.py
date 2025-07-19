@@ -1,4 +1,4 @@
-import pandas as pd  # data manipulation
+import pandas as pd  # data_processing manipulation
 import re  # regex for filename parsing
 from pandas_plink import read_plink
 import numpy as np
@@ -9,7 +9,7 @@ import argparse
 
 # Parse threshold argument for binarizing MoCA change
 parser = argparse.ArgumentParser(description="Generate mastertable with given threshold")
-parser.add_argument('--threshold', type=int, choices=[-2, -3, -4],  required=True, help='Threshold for binarizing MoCA change')
+parser.add_argument('--threshold', type=int, choices=[-2, -3, -4, -5],  required=True, help='Threshold for binarizing MoCA change')
 args = parser.parse_args()
 
 # ──────────────── 1) Clinical & Cognitive Data ────────────────
@@ -67,9 +67,9 @@ clinic_iids = set(
     df_link.loc[df_link["PATNO"].isin(clinic_patnos), "GP2sampleID"]
 )
 
-# Load PLINK data
+# Load PLINK data_processing
 (bim, fam, bed) = read_plink("/Users/nickq/Documents/Pioneer Academics/Research_Project/data/raw/genetics/PPMI_244_Plink/nonGR_LONI_PPMI_MAY2023")
-# Filter samples to those with clinical data
+# Filter samples to those with clinical data_processing
 keep_samples = fam["iid"].isin(clinic_iids).values
 fam = fam[keep_samples].reset_index(drop=True)
 bed = bed[:, keep_samples]
@@ -150,7 +150,7 @@ print(f"[2] Genotype merge → df_geno_with_patno has {len(df_geno_with_patno)} 
 
 # ──────────────── 3) RNA-seq Data ────────────────
 rna_keep_patnos = set(df_master["PATNO"].astype(str))
-rna_folder = "/Volumes/Seagate BUP Slim SL Media/Reseach_Project/data/raw/rna_seq"
+rna_folder = "/Volumes/Seagate BUP Slim SL Media/Reseach_Project/data_processing/raw/rna_seq"
 sf_paths = glob.glob(os.path.join(rna_folder, "*.salmon.genes.sf"))
 fail_folder = os.path.join(rna_folder, "fail")
 if not sf_paths:
@@ -225,7 +225,7 @@ genotype_cols = [
 
 # ──────────────── Stratified CV Folds and Output ────────────────
 skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-output_dir = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/data_splits/cv_folds"
+output_dir = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/data_splits/cv_folds"
 os.makedirs(output_dir, exist_ok=True)
 for fold, (train_idx, test_idx) in enumerate(skf.split(df_master, df_master["label"])):
     df_train = df_master.iloc[train_idx].reset_index(drop=True)

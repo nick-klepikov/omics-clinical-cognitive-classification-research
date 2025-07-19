@@ -64,13 +64,13 @@ class EnLassoTransformer(BaseEstimator, TransformerMixin):
 
 def main():
     parser = argparse.ArgumentParser(description="RNA-seq Feature Selection Pipeline")
-    parser.add_argument('--threshold', type=int, choices={-2, -3, -4}, required=True, help="Threshold used in file names")
+    parser.add_argument('--threshold', type=int, choices={-2, -3, -4, -5}, required=True, help="Threshold used in file names")
     args = parser.parse_args()
     threshold = args.threshold
 
     for fold in range(5):
-        # 1) Load SNP + clinical training data direct from combined CSV
-        input_path = f'/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_unprocessed/geno_plus_clinical_fold_{fold}_thresh_{threshold}.csv'
+        # 1) Load SNP + clinical training data_processing direct from combined CSV
+        input_path = f'/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/final_datasets_unprocessed/geno_plus_clinical_fold_{fold}_thresh_{threshold}.csv'
         df_train = pd.read_csv(
             input_path,
             dtype={'PATNO': str}
@@ -120,7 +120,7 @@ def main():
         # 4) Wrap into a Pipeline
         fs_pipe = Pipeline([
             ('pre', preprocessor),
-            ('enlasso', EnLassoTransformer(n_runs=100, alpha=0.01, top_k=20, random_state=42)),
+            ('enlasso', EnLassoTransformer(n_runs=100, alpha=0.01, top_k=40, random_state=42)),
         ])
 
         # 5) Fit
@@ -151,11 +151,11 @@ def main():
         snp_only_pre.fit(X_train_sel)
 
         # Export this fitted SNP-only preprocessor
-        snp_only_path = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/preprocessing_pipeline/snp_prep_fold_{fold}_thresh_{threshold}.joblib"
+        snp_only_path = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/preprocessing_pipeline/snp_prep_fold_{fold}_thresh_{threshold}.joblib"
         joblib.dump(snp_only_pre, snp_only_path)
         print(f"Fold {fold} Threshold {threshold}: Saved SNP-only preprocessor to {snp_only_path}")
 
-        # Transform training data
+        # Transform training data_processing
         X_train_trans = fs_pipe.transform(X_train)
         # Build a DataFrame for transformed features with column names
         df_train_trans = pd.DataFrame(X_train_trans, columns=selected_features)
@@ -163,8 +163,8 @@ def main():
         df_train_trans.insert(0, 'PATNO', ids)
         df_train_trans.insert(1, 'label', y_train)
 
-        # Save transformed training data to CSV
-        output_transformed_path = f'/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/lasso_output/snp_train_transformed_features_fold_{fold}_thresh_{threshold}.csv'
+        # Save transformed training data_processing to CSV
+        output_transformed_path = f'/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/final_datasets_processed/lasso_output/snp_train_transformed_features_fold_{fold}_thresh_{threshold}.csv'
         df_train_trans.to_csv(output_transformed_path, index=False)
         print(f"Fold {fold} Threshold {threshold}: Saved transformed training data to {output_transformed_path}")
 

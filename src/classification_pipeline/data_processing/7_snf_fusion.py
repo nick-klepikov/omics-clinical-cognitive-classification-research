@@ -18,7 +18,7 @@ import argparse
 # User-configurable output directory for fused networks
 # -----------------------------------------------------------------------------
 
-OUTPUT_FUSED_DIR = '/Users/nickq/Documents/Pioneer Academics/Research_Project/data/fused_datasets/affinity_matrices'
+OUTPUT_FUSED_DIR = '/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/fused_datasets/affinity_matrices'
 
 def load_data(mastertable_path):
     # Load the merged mastertable containing train+val+test
@@ -43,7 +43,7 @@ def extract_features(df, exclude_cols=None):
 
 def build_affinity(X, K=20, mu=0.5):
     """Compute sample-sample affinity graph using SNFpy make_affinity."""
-    # Directly use make_affinity on the data matrix
+    # Directly use make_affinity on the data_processing matrix
     W = compute.make_affinity(X, metric='sqeuclidean', K=K, mu=mu)
     return W
 
@@ -80,7 +80,7 @@ def save_single(W, type, out_path=None):
 def main():
 
     parser = argparse.ArgumentParser(description="RNA-seq Feature Selection Pipeline")
-    parser.add_argument('--threshold', type=int, choices={-2, -3, -4}, required=True,
+    parser.add_argument('--threshold', type=int, choices={-2, -3, -4, -5}, required=True,
                         help="Threshold used in file names")
     args = parser.parse_args()
 
@@ -92,7 +92,7 @@ def main():
     for fold in range(5):
         print(f"Running SNF for fold {fold}")
         # Load modalities from the merged mastertable for current fold
-        mastertable_path = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/fused_datasets/final_mastertable_fold_{fold}_thresh_{args.threshold}.csv"
+        mastertable_path = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/fused_datasets/final_mastertable_fold_{fold}_thresh_{args.threshold}.csv"
         df_geno, df_rna = load_data(mastertable_path)
 
         # Extract features (already standardized upstream)

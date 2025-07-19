@@ -7,8 +7,8 @@ import argparse
 def main(threshold):
     for fold in range(5):
         # Paths
-        INPUT_CSV = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_unprocessed/rna_plus_clinical_fold_{fold}_thresh_{threshold}.csv"
-        OUTPUT_CSV = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/rna_plus_clinical_final_fold_{fold}_thresh_{threshold}.csv"
+        INPUT_CSV = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/intermid/final_datasets_unprocessed/rna_plus_clinical_fold_{fold}_thresh_{threshold}.csv"
+        OUTPUT_CSV = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/final_datasets_processed/rna_plus_clinical_final_fold_{fold}_thresh_{threshold}.csv"
 
         # Read input
         df = pd.read_csv(INPUT_CSV, dtype={"PATNO": str})
@@ -54,6 +54,6 @@ def main(threshold):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--threshold", type=int, choices=[-2, -3, -4], required=True, help="Threshold value for input files")
+    parser.add_argument("--threshold", type=int, choices=[-2, -3, -4. -5], required=True, help="Threshold value for input files")
     args = parser.parse_args()
     main(args.threshold)

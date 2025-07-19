@@ -15,16 +15,16 @@ def log2_plus_one(X):
 def main():
 
     parser = argparse.ArgumentParser(description="RNA-seq Feature Selection Pipeline")
-    parser.add_argument('--threshold', type=int, choices={-2, -3, -4}, required=True, help="Threshold used in file names")
+    parser.add_argument('--threshold', type=int, choices={-2, -3, -4, -5}, required=True, help="Threshold used in file names")
     args = parser.parse_args()
 
 
     for fold in range(5):
         # Input feature tables
-        snp_csv = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/lasso_output/snp_train_transformed_features_fold_{fold}_thresh_{args.threshold}.csv"
-        rna_csv = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/lasso_output/rna_seq_train_transformed_features_fold_{fold}_thresh_{args.threshold}.csv"
+        snp_csv = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/final_datasets_processed/lasso_output/snp_train_transformed_features_fold_{fold}_thresh_{args.threshold}.csv"
+        rna_csv = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/final_datasets_processed/lasso_output/rna_seq_train_transformed_features_fold_{fold}_thresh_{args.threshold}.csv"
 
-        test_csv = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/data_splits/cv_folds/test_fold_{fold}_thresh_{args.threshold}.csv"
+        test_csv = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/data_splits/cv_folds/test_fold_{fold}_thresh_{args.threshold}.csv"
         df_test = pd.read_csv(test_csv, dtype={'PATNO': str}).set_index('PATNO')
         # Load with PATNO as index
         df_snp = pd.read_csv(snp_csv, dtype={'PATNO': str}).set_index('PATNO')
@@ -58,8 +58,8 @@ def main():
         test_mask = df_master['split'] == 'test'
 
         # Load fitted preprocessors
-        rna_and_clin_prep = joblib.load(f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/preprocessing_pipeline/rna_and_clin_prep_fold_{fold}_thresh_{args.threshold}.joblib")
-        snp_prep = joblib.load(f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/preprocessing_pipeline/snp_prep_fold_{fold}_thresh_{args.threshold}.joblib")
+        rna_and_clin_prep = joblib.load(f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/preprocessing_pipeline/rna_and_clin_prep_fold_{fold}_thresh_{args.threshold}.joblib")
+        snp_prep = joblib.load(f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/preprocessing_pipeline/snp_prep_fold_{fold}_thresh_{args.threshold}.joblib")
 
         # Adjust and apply SNP preprocessor
         # Expected SNP columns
@@ -124,7 +124,7 @@ def main():
               f"({len(df_rna.columns) - len(clinical_and_label)} total)")
 
         # Save mastertable
-        out_path = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/fused_datasets/final_mastertable_fold_{fold}_thresh_{args.threshold}.csv"
+        out_path = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/fused_datasets/final_mastertable_fold_{fold}_thresh_{args.threshold}.csv"
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         df_master.to_csv(out_path, index=True)
         print(f"Mastertable written to {out_path}")

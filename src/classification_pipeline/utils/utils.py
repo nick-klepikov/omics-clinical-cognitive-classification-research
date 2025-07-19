@@ -1,32 +1,36 @@
+# SPDX-License-Identifier: MIT
+# Adapted from Gómez de Lope et al., "Graph Representation Learning Strategies for Omics Data: A Case Study on Parkinson’s Disease", arXiv:2406.14442 (MIT License)
+import argparse
+
 import torch
 import pandas as pd
 import numpy as np
 import os
+
+from sklearn.metrics import roc_auc_score, f1_score
 from torch_geometric.data import Data, InMemoryDataset
-from torch_geometric.utils import from_scipy_sparse_matrix, from_networkx
+from torch_geometric.utils import from_scipy_sparse_matrix
 import scipy.sparse as sp
 import networkx as nx
-from torchmetrics import MetricCollection, AUROC, Accuracy, Precision, Recall, Specificity, F1Score
+from torchmetrics import MetricCollection, AUROC, Accuracy, Recall, Specificity, F1Score
 from sklearn.decomposition import PCA
-from sklearn.utils import class_weight
 from sklearn.model_selection import StratifiedKFold
-from torch.optim import lr_scheduler
 import copy
-import torch.nn as nn
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import pdist
 from scipy.spatial.distance import squareform
 from PIL import Image
 import wandb
-from models import *
+from src.classification_pipeline.models.models import *
 import shap
 from torch.autograd import Variable
 from torch_geometric.explain import Explainer, GNNExplainer
 import torch.nn.init as init
-from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 import warnings
 import tarfile
 import random
+from imblearn.over_sampling import SMOTE
+
 #from plot_utils import plot_from_shap_values
 
 # --------------------------- set up------------------------------
@@ -47,28 +51,28 @@ def check_cuda():
 # ------------------------ graph creation ------------------------
 class MyPSN(InMemoryDataset):
     """
-    MyPSN dataset class for processing and loading patient network data.
+    MyPSN dataset class for processing and loading patient network data_processing.
     Args:
         root (string): Root directory where the dataset should be saved.
-        X_file (string): File path to the gene expression data (embeddings).
+        X_file (string): File path to the gene expression data_processing (embeddings).
         graph_file (string): File path to the adjacency matrix.
         labels_cv_file (string): File path to the cross-validation labels.
         labels_test_file (string): File path to the test labels.
         transform (callable, optional): A function/transform that takes in an
-            `torch_geometric.data.Data` object and returns a transformed version.
-            The data object will be transformed before every access.
+            `torch_geometric.data_processing.Data` object and returns a transformed version.
+            The data_processing object will be transformed before every access.
         pre_transform (callable, optional): A function/transform that takes in an
-            `torch_geometric.data.Data` object and returns a transformed version.
-            The data object will be transformed before being saved to disk.
+            `torch_geometric.data_processing.Data` object and returns a transformed version.
+            The data_processing object will be transformed before being saved to disk.
         pre_filter (callable, optional): A function that takes in an
-            `torch_geometric.data.Data` object and returns a boolean value,
-            indicating whether the data object should be included in the dataset.
+            `torch_geometric.data_processing.Data` object and returns a boolean value,
+            indicating whether the data_processing object should be included in the dataset.
     Attributes:
-        X_file (string): File path to the gene expression data (embeddings).
+        X_file (string): File path to the gene expression data_processing (embeddings).
         graph_file (string): File path to the adjacency matrix.
         labels_cv_file (string): File path to the cross-validation labels.
         labels_test_file (string): File path to the test labels.
-        data (torch_geometric.data.Data): The processed data object.
+        data (torch_geometric.data.Data): The processed data_processing object.
         slices (dict): A dictionary holding the assignment of the dataset to
             the different splits (train, test, etc.).
     """
@@ -77,19 +81,19 @@ class MyPSN(InMemoryDataset):
         Initializes a new instance of the MyPSN dataset.
         Args:
             root (string): Root directory where the dataset should be saved.
-            X_file (string): File path to the gene expression data (embeddings).
+            X_file (string): File path to the gene expression data_processing (embeddings).
             graph_file (string): File path to the adjacency matrix.
             labels_cv_file (string): File path to the cross-validation labels.
             labels_test_file (string): File path to the test labels.
             transform (callable, optional): A function/transform that takes in an
-                `torch_geometric.data.Data` object and returns a transformed version.
-                The data object will be transformed before every access.
+                `torch_geometric.data_processing.Data` object and returns a transformed version.
+                The data_processing object will be transformed before every access.
             pre_transform (callable, optional): A function/transform that takes in an
-                `torch_geometric.data.Data` object and returns a transformed version.
-                The data object will be transformed before being saved to disk.
+                `torch_geometric.data_processing.Data` object and returns a transformed version.
+                The data_processing object will be transformed before being saved to disk.
             pre_filter (callable, optional): A function that takes in an
-                `torch_geometric.data.Data` object and returns a boolean value,
-                indicating whether the data object should be included in the dataset.
+                `torch_geometric.data_processing.Data` object and returns a boolean value,
+                indicating whether the data_processing object should be included in the dataset.
         """
         self.X_file = X_file
         self.graph_file = graph_file
@@ -143,21 +147,21 @@ class MyPSN(InMemoryDataset):
         labels_test = pd.read_csv(self.raw_paths[3], index_col=0)
         labels = pd.concat([labels_cv, labels_test], axis=0)
         y = torch.tensor(np.array(labels)).squeeze(-1)
-        # create train and test masks for data
+        # create train and test masks for data_processing
         train_mask = torch.zeros(X.shape[0], dtype=torch.bool)
         test_mask = torch.zeros(X.shape[0], dtype=torch.bool)
         train_mask[[X_mapping[x] for x in labels_cv.index]] = True
         test_mask[[X_mapping[x] for x in labels_test.index]] = True
-        # build data object
+        # build data_processing object
         data = Data(edge_index=edge_index,
                     edge_attr=edge_attr,
                     x=torch.tensor(np.array(X)).type(torch.float),
                     y=y)
         data['train_mask'] = train_mask
         data['test_mask'] = test_mask
-        # data.num_nodes = G.number_of_nodes()
-        # data.num_classes = 2
-        # save processed data
+        # data_processing.num_nodes = G.number_of_nodes()
+        # data_processing.num_classes = 2
+        # save processed data_processing
         data, slices = self.collate([data])
         torch.save((data, slices), self.processed_paths[0])
 
@@ -306,16 +310,16 @@ def describe_graph(adj_df):
 def similarity_network(s_threshold, X_df):
     """
     Build a similarity network from a given DataFrame using a threshold for similarity values.
-    The network is constructed by calculating pairwise cosine similarity between data points, and then thresholding
+    The network is constructed by calculating pairwise cosine similarity between data_processing points, and then thresholding
     the similarity values to create an adjacency matrix. The adjacency matrix is then checked for symmetry and
     connectivity, and edges are added to ensure a connected graph.
     Parameters:
         - s_threshold (float): Threshold value for similarity. Similarity values below this threshold are set to 0.
-        - X_df (pandas DataFrame): DataFrame containing data points as rows and features as columns.
+        - X_df (pandas DataFrame): DataFrame containing data_processing points as rows and features as columns.
     Returns:
         - adj_df (pandas DataFrame): Adjacency matrix representing the similarity network.
     """
-    # Calculate pairwise cosine distance between data points
+    # Calculate pairwise cosine distance between data_processing points
     dist = pd.DataFrame(
         squareform(pdist(X_df, metric='cosine')),
         columns=X_df.index,
@@ -352,7 +356,7 @@ def random_network(edge_percentage, X_df, max_iter_er=1000, tolerance=0.01):
     Create a random, connected Erdős–Rényi network with a specified percentage of edges.
     Parameters:
         - edge_percentage (float): Percentage of possible edges to include in the network (between 0 and 1).
-        - X_df (pandas DataFrame): DataFrame containing data points as rows and features as columns.he network.
+        - X_df (pandas DataFrame): DataFrame containing data_processing points as rows and features as columns.he network.
         - max_iter_er (int): Maximum number of iterations to attempt generating a connected ER graph.
         - tolerance (float): Allowed tolerance for the number of edges as a percentage of target edges in ER graph.
     Returns:
@@ -365,15 +369,15 @@ def random_network(edge_percentage, X_df, max_iter_er=1000, tolerance=0.01):
     if target_edges <= (num_nodes - 1):
         print("Edge percentage is too low to create a connected graph. Fallback to a random chain.")
         fallback = True
-    else: 
+    else:
         # Create a random, connected Erdős–Rényi graph
         p = edge_percentage  # ER probability for edge creation
         for _ in range(max_iter_er):
             G = nx.erdos_renyi_graph(num_nodes, p)
-            if nx.is_connected(G): 
+            if nx.is_connected(G):
                 if abs(G.number_of_edges() - target_edges) <= int(tolerance * target_edges): # If the number of edges ~= target, convert G to adj and return adj matrix
-                    adj_matrix = nx.to_numpy_array(G) 
-                    adj_df = pd.DataFrame(adj_matrix, index=X_df.index, columns=X_df.index) 
+                    adj_matrix = nx.to_numpy_array(G)
+                    adj_df = pd.DataFrame(adj_matrix, index=X_df.index, columns=X_df.index)
                     print("A random, connected Erdős–Rényi was created.")
                     describe_graph(adj_df)
                     return adj_df
@@ -406,7 +410,7 @@ def fullyconn_network(X_df):
     """
     Create a fully connected network.
     Parameters:
-    X_df (pandas DataFrame): DataFrame containing data points as rows and features as columns.
+    X_df (pandas DataFrame): DataFrame containing data_processing points as rows and features as columns.
     Returns:
     adj_df (pandas DataFrame): Adjacency matrix representing the fully connected network.
     """
@@ -473,13 +477,13 @@ def get_pos_similarity(X_df):
     """
     Calculate the position of nodes in a similarity graph based on cosine distance.
     Parameters:
-    X_df (pandas.DataFrame): The input data frame containing the data points.
+    X_df (pandas.DataFrame): The input data_processing frame containing the data_processing points.
     Returns:
-    dict: A dictionary representing the positions of the data points in a graph.
+    dict: A dictionary representing the positions of the data_processing points in a graph.
     Raises:
     ValueError: If the adjacency matrix is not symmetric.
     """
-    # Calculate pairwise cosine distance between data points
+    # Calculate pairwise cosine distance between data_processing points
     dist = pd.DataFrame(
         squareform(pdist(X_df, metric='cosine')),
         columns=X_df.index,
@@ -519,7 +523,7 @@ def display_graph(fold, G, pos, labels_dict=None, save_fig=False, path="./", nam
     weights = nx.get_edge_attributes(G, 'weight').values()
     if min(weights) == max(weights):
         # If all weights are the same, set them to a constant value (1.5)
-        weights = [1.5] * len(weights) 
+        weights = [1.5] * len(weights)
     else:
         # Normalize weights to the range [0.5, 5]
         weights = [(weight - min(weights)) * (5 - 0.5) / (max(weights) - min(weights)) + 0.5 for weight in weights]
@@ -584,15 +588,15 @@ def create_pyg_data(adj_df, X_df, y, train_msk, val_msk, test_msk):
     data["val_mask"] = val_msk
     data["test_mask"] = test_msk
     # # Gather and show some statistics about the graph.
-    # print(f'Number of nodes: {data.num_nodes}')
-    # print(f'Number of edges: {data.num_edges}')
-    # print(f'Average node degree: {data.num_edges / data.num_nodes:.2f}')
-    # print(f'Number of training nodes: {data.train_mask.sum()}')
-    # print(f'Training node label rate: {int(data.train_mask.sum()) / data.num_nodes:.2f}')
-    # print(f'Has isolated nodes: {data.has_isolated_nodes()}')
-    # print(f'Has self-loops: {data.has_self_loops()}')
-    # print(f'Is undirected: {data.is_undirected()}')
-    # unique, counts = np.unique(data.y, return_counts=True)
+    # print(f'Number of nodes: {data_processing.num_nodes}')
+    # print(f'Number of edges: {data_processing.num_edges}')
+    # print(f'Average node degree: {data_processing.num_edges / data_processing.num_nodes:.2f}')
+    # print(f'Number of training nodes: {data_processing.train_mask.sum()}')
+    # print(f'Training node label rate: {int(data_processing.train_mask.sum()) / data_processing.num_nodes:.2f}')
+    # print(f'Has isolated nodes: {data_processing.has_isolated_nodes()}')
+    # print(f'Has self-loops: {data_processing.has_self_loops()}')
+    # print(f'Is undirected: {data_processing.is_undirected()}')
+    # unique, counts = np.unique(data_processing.y, return_counts=True)
     # print("Classes:", unique)
     # print("Counts:", counts)
     return data
@@ -635,9 +639,9 @@ def pad_features(x, num_heads, feat_names):
 
 def k_fold(x, y, folds):
     """
-    Splits the data into k folds for cross-validation.
+    Splits the data_processing into k folds for cross-validation.
     Args:
-        x (torch.Tensor): The input data.
+        x (torch.Tensor): The input data_processing.
         y (numpy.ndarray): The target labels.
         folds (int): The number of folds for cross-validation.
     Returns:
@@ -697,30 +701,20 @@ def generate_model(model_name, config, data):
     n_features = data.num_node_features
     models_dict = { # Dictionary of model names and their corresponding lambda functions to instantiate the models only when they are actually needed.  This approach avoids initializing all models upfront.
         "MLP2": lambda: MLP2(n_features, config["cl1_hidden_units"], config["cl2_hidden_units"], config["ll_out_units"], config["dropout"]),
-        "GCNN_uw": lambda: GCNN_uw(n_features, config.cl1_hidden_units, config.cl2_hidden_units, config.ll_out_units, config.dropout),
         "GCNN": lambda: GCNN(n_features, config["cl1_hidden_units"], config["cl2_hidden_units"], config["ll_out_units"], config["dropout"]),
-        "Cheb_GCNN_uw": lambda: Cheb_GCNN_uw(n_features, config.cl1_hidden_units, config.cl2_hidden_units, config.K_cheby, config.ll_out_units, config.dropout),
         "Cheb_GCNN": lambda: Cheb_GCNN(n_features, config.cl1_hidden_units, config.cl2_hidden_units, config.K_cheby, config.ll_out_units, config.dropout),
         "GAT": lambda: GAT(n_features, config["cl1_hidden_units"], config["cl2_hidden_units"], config["heads"], config["ll_out_units"], config["dropout"]),
-        "GAT_uw": lambda: GAT_uw(n_features, config.cl1_hidden_units, config.cl2_hidden_units, config.heads, config.ll_out_units, config.dropout),
-        "GCNN_10L_uw": lambda: GCNN_10L_uw(n_features, config.cl1_hidden_units, config.ll_out_units, config.dropout),
-        "GCNN_10L": lambda: GCNN_10L(n_features, config.cl1_hidden_units, config.ll_out_units, config.dropout),
-        "Cheb_GCNN_10L_uw": lambda: Cheb_GCNN_10L_uw(n_features, config.cl1_hidden_units, config.K_cheby, config.ll_out_units, config.dropout),
-        "Cheb_GCNN_10L": lambda: Cheb_GCNN_10L(n_features, config.cl1_hidden_units, config.K_cheby, config.ll_out_units, config.dropout),
-        "Cheb_GCNN_50L": lambda: Cheb_GCNN_50L(n_features, config.cl1_hidden_units, config.K_cheby, config.ll_out_units, config.dropout),
-        "GAT_10L_uw": lambda: GAT_10L_uw(n_features, config.cl1_hidden_units, config.heads, config.ll_out_units, config.dropout),
-        "GAT_50L_uw": lambda: GAT_50L_uw(n_features, config.cl1_hidden_units, config.heads, config.ll_out_units, config.dropout),
-        "GAT_10L": lambda: GAT_10L(n_features, config.cl1_hidden_units, config.heads, config.ll_out_units, config.dropout),
-        "MeanAggMPNN_uw": lambda: MeanAggMPNN_uw(n_features, config.cl1_hidden_units, config.cl2_hidden_units, config.ll_out_units, config.dropout),
-        "GTC": lambda: GTC(n_features, config.cl1_hidden_units, config.cl2_hidden_units, config.heads, config.ll_out_units, config.dropout),
-        "GTC_uw": lambda: GTC_uw(n_features, config.cl1_hidden_units, config.cl2_hidden_units, config.heads, config.ll_out_units, config.dropout),
-        "GPST_lin": lambda: GPST_lin(n_features, config.cl1_hidden_units, config.heads, config.ll_out_units, config.dropout, config.K_cheby),
+        "DOS_GNN": lambda: DOS_GNN(
+            n_features,
+            config["cl1_hidden_units"],
+            config["cl2_hidden_units"],
+            config["ll_out_units"],
+            config["dropout"]
+        ),
         "GPST": lambda: GPST(n_features, config.heads, config.ll_out_units, config.dropout, config.K_cheby),
         "GPST_GINE": lambda: GPST_GINE(n_features, config.cl1_hidden_units, config.cl2_hidden_units, config.heads, config.ll_out_units, config.dropout, edge_dim),
         "GPST_GINE_lin": lambda: GPST_GINE_lin(n_features, config.cl1_hidden_units, config.cl2_hidden_units, config.heads, config.ll_out_units, config.dropout, edge_dim),
         "GINE": lambda: GINE(n_features, config.h1_hidden_units, config.cl1_hidden_units, config.h2_hidden_units, config.cl2_hidden_units, config.ll_out_units, config.dropout, edge_dim),
-        "GUNet_uw": lambda: GUNet_uw(n_features, config.h1_hidden_units, config.cl1_hidden_units, config.h2_hidden_units, config.cl2_hidden_units, config.ll_out_units, config.depth, config.dropout),
-        "GUNet": lambda: GUNet(n_features, config.h1_hidden_units, config.cl1_hidden_units, config.h2_hidden_units, config.cl2_hidden_units, config.ll_out_units, config.depth, config.dropout)
     }
     if model_name not in models_dict:
         raise KeyError(f"Model name '{model_name}' is not found in the models_dict.")
@@ -730,7 +724,12 @@ def generate_model(model_name, config, data):
 
 
 
-def update_overall_metrics(fold, fold_best_epoch, homophily_index, feat_names, relevant_features, fold_performance, fold_losses, dict_val_metrics, dict_test_metrics, features_track):
+def update_overall_metrics(
+    fold, fold_best_epoch, homophily_index,
+    feat_names, relevant_features, raw_importances,
+    fold_performance, fold_losses,
+    dict_val_metrics, dict_test_metrics, features_track
+):
     """
     Update the overall metrics with the results from a fold.
     Args:
@@ -751,17 +750,21 @@ def update_overall_metrics(fold, fold_best_epoch, homophily_index, feat_names, r
     dict_val_metrics["N_epoch"].append(fold_best_epoch)
     dict_val_metrics["N_features"].append(len(feat_names))
     dict_val_metrics["homophily_index"].append(homophily_index)
+
     dict_test_metrics["Fold"].append(fold)
     dict_test_metrics["N_epoch"].append(fold_best_epoch)
+
     features_track["Fold"].append(fold)
     features_track["N_selected_features"].append(len(feat_names))
-    features_track["Selected_Features"].append(feat_names)
     features_track["Relevant_Features"].append(relevant_features)
+    features_track["Raw_Feature_Importances"].append(raw_importances)
+
     for m in fold_performance.keys():
         dict_val_metrics[m].append(fold_performance[m][fold_best_epoch][1])
         dict_test_metrics[m].append(fold_performance[m][fold_best_epoch][2])
+
     dict_val_metrics["Loss"].append(fold_losses[fold_best_epoch][1])
-    return (dict_val_metrics, dict_test_metrics, features_track)
+    return dict_val_metrics, dict_test_metrics, features_track
 
 
 def cv_metrics_to_wandb(dict_val_metrics, dict_test_metrics):
@@ -795,7 +798,7 @@ def get_results(results_dict):
     """
     Calculate summary statistics from a dictionary of results.
     Parameters:
-    results_dict (dict): A dictionary containing the results data.
+    results_dict (dict): A dictionary containing the results data_processing.
     Returns:
     pandas.DataFrame: A DataFrame containing the summary statistics.
     """
@@ -838,13 +841,14 @@ def get_results(results_dict):
 
 
 
+import torch.nn.functional as F
 # ------------ training & evaluation ------------
 def train_epoch(device, model, optimizer, criterion, data, metric):
     """Train step of model on training dataset for one epoch.
     Args:
         device (torch.device): The device to perform the training on.
         model (torch.nn.Module): The model to train.
-        data (torch_geometric.data.Data): The training data.
+        data (torch_geometric.data.Data): The training data_processing.
         criterion (torch.nn.Module): The loss function.
         optimizer (torch.optim.Optimizer): The optimizer for updating the model parameters.
         metric (torchmetrics.Metric): The metric for evaluating the model performance.
@@ -866,11 +870,11 @@ def train_epoch(device, model, optimizer, criterion, data, metric):
         y_hat = model(x=data.x, edge_index=data.edge_index, edge_weight=data.edge_attr.to(torch.float32)) # GCN, CHEBYNET, GUNet
     # # Perform a single forward pass
     # if ("_uw" in model_name or "GPST" in model_name) and not model_name == "GTC_uw":  # for unweighted models
-    #     y_hat = model(x=data.x, edge_index=data.edge_index)
+    #     y_hat = model(x=data_processing.x, edge_index=data_processing.edge_index)
     # elif "GAT" in model_name or "GTC" in model_name or "GINE" in model_name: # GAT, GTC, GTC_uw, GINE, GPST_GINE_lin, GPST_GINE
-    #     y_hat = model(x=data.x, edge_index=data.edge_index, edge_attr=data.edge_attr.to(torch.float32))
+    #     y_hat = model(x=data_processing.x, edge_index=data_processing.edge_index, edge_attr=data_processing.edge_attr.to(torch.float32))
     # else:
-    #     y_hat = model(x=data.x, edge_index=data.edge_index, edge_weight=data.edge_attr.to(torch.float32))
+    #     y_hat = model(x=data_processing.x, edge_index=data_processing.edge_index, edge_weight=data_processing.edge_attr.to(torch.float32))
     loss = criterion(y_hat[data.train_mask], data.y[data.train_mask])  # Compute the loss
     loss.backward()  # Derive gradients
     optimizer.step()  # Update parameters based on gradients
@@ -884,11 +888,11 @@ def train_epoch(device, model, optimizer, criterion, data, metric):
 
 
 def evaluate_epoch(device, model, criterion, data, metric):
-    """Evaluate the model on validation data for a single epoch.
+    """Evaluate the model on validation data_processing for a single epoch.
     Args:
         device (torch.device): The device to perform the evaluation on.
         model (torch.nn.Module): The model to evaluate.
-        data (torch_geometric.data.Data): The validation data.
+        data (torch_geometric.data.Data): The validation data_processing.
         criterion (torch.nn.Module): The loss criterion.
         metric (torchmetrics.Metric): The evaluation metric.
     Returns:
@@ -921,11 +925,11 @@ def evaluate_epoch(device, model, criterion, data, metric):
 
 
 def test_epoch(device, model, data, metric):
-    """Evaluate the model on test data for a single epoch.
+    """Evaluate the model on test data_processing for a single epoch.
     Args:
         device (torch.device): The device to perform the evaluation on.
         model (torch.nn.Module): The model to evaluate.
-        data (torch_geometric.data.Data): The test data.
+        data (torch_geometric.data.Data): The test data_processing.
         metric (torchmetrics.Metric): The metric to compute the performance.
     Returns:
         float: The test accuracy.
@@ -954,7 +958,7 @@ def training(device, model, optimizer, scheduler, criterion, data, n_epochs, fol
         optimizer (torch.optim.Optimizer): The optimizer used for training.
         scheduler (torch.optim.lr_scheduler._LRScheduler): The learning rate scheduler.
         criterion (torch.nn.Module): The loss function.
-        data (DataLoader): The data used for training.
+        data (DataLoader): The data_processing used for training.
         n_epochs (int): The number of training epochs.
         fold (int): The fold number.
     Returns:
@@ -1077,7 +1081,7 @@ def training_nowandb(device, model, optimizer, scheduler, criterion, data, n_epo
         optimizer (torch.optim.Optimizer): The optimizer used for updating the model's parameters.
         scheduler (torch.optim.lr_scheduler._LRScheduler): The learning rate scheduler.
         criterion (torch.nn.Module): The loss function used for training.
-        data (torch.utils.data.Dataset): The dataset used for training.
+        data (torch.utils.data_processing.Dataset): The dataset used for training.
         n_epochs (int): The number of training epochs.
         fold (int): The fold number.
     Returns:
@@ -1149,6 +1153,158 @@ def training_nowandb(device, model, optimizer, scheduler, criterion, data, n_epo
                 best_epoch = epoch
     return losses, perf_metrics, best_epoch, best_loss, best_model #, embeddings
 
+def training_nowandb_dos_gnn(device, model, optimizer, scheduler, criterion, data, n_epochs, fold):
+    """Performs the full training process without logging in wandb.
+    Args:
+        device (torch.device): The device to be used for training.
+        model (torch.nn.Module): The model to be trained.
+        optimizer (torch.optim.Optimizer): The optimizer used for updating the model's parameters.
+        scheduler (torch.optim.lr_scheduler._LRScheduler): The learning rate scheduler.
+        criterion (torch.nn.Module): The loss function used for training.
+        data (torch.utils.data_processing.Dataset): The dataset used for training.
+        n_epochs (int): The number of training epochs.
+        fold (int): The fold number.
+    Returns:
+        tuple: A tuple containing the following elements:
+            - losses (list): A list of training and validation losses for each epoch.
+            - perf_metrics (dict): A dictionary containing performance metrics (Accuracy, AUC, Recall, Specificity, F1) for each epoch.
+            - best_epoch (int): The epoch number with the best validation loss.
+            - best_loss (float): The best validation loss.
+            - best_model (torch.nn.Module): The model with the best validation loss.
+    """
+    losses = []
+    #embeddings = []
+    perf_metrics = {'Accuracy': [], 'AUC': [], 'Recall': [], 'Specificity': [], 'F1': []}
+    train_metrics = MetricCollection({
+        'Accuracy': Accuracy(task="binary"),
+        'AUC': AUROC(task="binary", num_classes=2),
+        'Recall': Recall(task="binary", num_classes=2),
+        'Specificity': Specificity(task="binary", num_classes=2),
+        'F1': F1Score(task="binary", num_classes=2),
+    })
+    val_metrics = MetricCollection({
+        'Accuracy': Accuracy(task="binary"),
+        'AUC': AUROC(task="binary", num_classes=2),
+        'Recall': Recall(task="binary", num_classes=2),
+        'Specificity': Specificity(task="binary", num_classes=2),
+        'F1': F1Score(task="binary", num_classes=2),
+    })
+    test_metrics = MetricCollection({
+                'Accuracy': Accuracy(task="binary"),
+                'AUC': AUROC(task="binary", num_classes=2),
+                'Recall': Recall(task="binary", num_classes=2),
+                'Specificity': Specificity(task="binary", num_classes=2),
+                'F1': F1Score(task="binary", num_classes=2),
+    })
+    for epoch in range(n_epochs):
+        # train
+        train_loss, train_perf = train_epoch(device, model, optimizer, criterion, data, train_metrics) #, epoch_embeddings
+        # validation
+        val_loss, val_perf = evaluate_epoch(device, model, criterion, data, val_metrics)
+        # scheduler step
+        scheduler.step(val_loss)
+        # track losses & embeddings
+        losses.append([train_loss, val_loss])
+        #embeddings.append(epoch_embeddings)
+        test_perf = test_epoch(device, model, data, test_metrics)
+        for m in perf_metrics.keys():
+                perf_metrics[m].append([train_perf[m].detach().numpy().item(), val_perf[m].detach().numpy().item(), test_perf[m].detach().numpy().item()])
+        if epoch % 50 == 0:
+            print(f"Epoch {epoch}",
+                  f"Loss train {train_loss}",
+                  f"Loss validation {val_loss}",
+                  f"Acc train {train_perf}",
+                  f"Acc validation {val_perf};")
+        train_metrics.reset()
+        val_metrics.reset()
+        test_metrics.reset()
+
+        # identify best model based on max validation AUC
+        if epoch < 1:
+            best_loss = losses[epoch][1]
+            best_model = copy.deepcopy(model)
+            best_epoch = epoch
+        else:
+            if best_loss < losses[epoch][1]:
+                continue
+            else:
+                best_loss = losses[epoch][1]
+                best_model = copy.deepcopy(model)
+                best_epoch = epoch
+
+    # === Stage 2: SMOTE on DOS-GNN embeddings + MLP head training ===
+    # Prepare data_processing for SMOTE
+    best_model = best_model.to(device)
+    best_model.eval()
+    with torch.no_grad():
+        x_in     = data.x.to(device)
+        edge_idx = data.edge_index.to(device)
+        edge_w   = data.edge_attr.to(torch.float32).to(device)
+
+        # First DOS-GNN layer -> produces [h1||h2]
+        h = best_model.dos1(x_in, edge_idx, edge_w)
+        h = F.relu(h)
+
+        # Second DOS-GNN layer -> produces [h1'||h2']
+        H = best_model.dos2(h, edge_idx, edge_w)
+        H = F.relu(H)
+
+    H = H.cpu().numpy()
+    y_np = data.y.cpu().numpy()
+    train_idx = data.train_mask
+    val_idx   = data.val_mask
+    test_idx  = data.test_mask
+
+    # oversample only minority in embedding space
+    sm = SMOTE(sampling_strategy=0.5, random_state=42)
+    H_res, y_res = sm.fit_resample(H[train_idx], y_np[train_idx])
+
+    # convert resampled data_processing to tensors
+    H_res = torch.tensor(H_res, dtype=torch.float32).to(device)
+    y_res = torch.tensor(y_res, dtype=torch.long).to(device)
+    # prepare validation and test embeddings
+    H_val  = torch.tensor(H[val_idx], dtype=torch.float32).to(device)
+    y_val  = torch.tensor(y_np[val_idx], dtype=torch.long).to(device)
+    H_test = torch.tensor(H[test_idx], dtype=torch.float32).to(device)
+    y_test = torch.tensor(y_np[test_idx], dtype=torch.long).to(device)
+
+    # Build full dataset for head: train (resampled), val, test
+    all_x = torch.cat([H_res, H_val, H_test], dim=0)
+    all_y = torch.cat([y_res, y_val, y_test], dim=0)
+    train_mask = torch.cat([
+        torch.ones(H_res.size(0), dtype=torch.bool, device=all_x.device),
+        torch.zeros(H_val.size(0) + H_test.size(0), dtype=torch.bool, device=all_x.device)
+    ])
+    val_mask = torch.cat([
+        torch.zeros(H_res.size(0), dtype=torch.bool, device=all_x.device),
+        torch.ones(H_val.size(0), dtype=torch.bool, device=all_x.device),
+        torch.zeros(H_test.size(0), dtype=torch.bool, device=all_x.device)
+    ])
+    test_mask = torch.cat([
+        torch.zeros(H_res.size(0) + H_val.size(0), dtype=torch.bool, device=all_x.device),
+        torch.ones(H_test.size(0), dtype=torch.bool, device=all_x.device)
+    ])
+    head_data = Data(x=all_x, y=all_y,
+                     train_mask=train_mask,
+                     val_mask=val_mask,
+                     test_mask=test_mask)
+    # define a simple MLP head matching your existing MLP2 signature
+    head = MLP2(in_f=H_res.size(1),
+                h1_f=criterion.__class__.__name__ and model.lin1.in_features,  # adjust hidden sizes if needed
+                h2_f=criterion.__class__.__name__ and model.lin1.out_features,
+                out_f=int(data.y.max().item())+1,
+                p_dropout=0.5).to(device)
+    head.apply(init_weights)
+    head_opt = torch.optim.Adam(head.parameters(), lr=optimizer.defaults['lr'])
+    head_crit = criterion
+    # train MLP head without wandb
+    head_losses, head_perf, head_best_epoch, head_best_loss, best_head = \
+        training_mlp_nowandb(device, head, head_opt, scheduler, head_crit,
+                             head_data, n_epochs, fold)
+
+    return losses, perf_metrics, best_epoch, best_loss, best_model, \
+           head_losses, head_perf, head_best_epoch, head_best_loss, best_head
+
 
 def train_mlp(device, model, optimizer, criterion, data, metric):
     """
@@ -1158,7 +1314,7 @@ def train_mlp(device, model, optimizer, criterion, data, metric):
         model (torch.nn.Module): The MLP model to train.
         optimizer (torch.optim.Optimizer): The optimizer used for training.
         criterion (torch.nn.Module): The loss criterion used for training.
-        data (torch_geometric.data.Data): The input data for training.
+        data (torch_geometric.data.Data): The input data_processing for training.
         metric (torchmetrics.Metric): The metric used for evaluating the model performance.
     Returns:
         tuple: A tuple containing the epoch loss (float) and the training performance (float).
@@ -1181,12 +1337,12 @@ def train_mlp(device, model, optimizer, criterion, data, metric):
 
 def evaluate_mlp(device, model, criterion, data, metric):
     """
-    Evaluates the performance of a multi-layer perceptron (MLP) model on the given data.
+    Evaluates the performance of a multi-layer perceptron (MLP) model on the given data_processing.
     Args:
         device (torch.device): The device to perform the evaluation on.
         model (torch.nn.Module): The MLP model to evaluate.
         criterion: The loss criterion used for evaluation.
-        data: The data to evaluate the model on.
+        data: The data_processing to evaluate the model on.
         metric: The performance metric used for evaluation.
     Returns:
         tuple: A tuple containing the validation loss and the validation performance.
@@ -1212,14 +1368,14 @@ def evaluate_mlp(device, model, criterion, data, metric):
 
 def test_mlp(device, model, data, metric):
     """
-    Evaluate the performance of a multi-layer perceptron (MLP) model on test data.
+    Evaluate the performance of a multi-layer perceptron (MLP) model on test data_processing.
     Args:
         device (torch.device): The device to run the model on.
         model (torch.nn.Module): The MLP model to evaluate.
-        data (torch_geometric.data.Data): The input data for the model.
+        data (torch_geometric.data.Data): The input data_processing for the model.
         metric (torch.nn.Module): The metric to compute the performance.
     Returns:
-        float: The performance of the model on the test data.
+        float: The performance of the model on the test data_processing.
     """
     model.eval()
     data.to(device)
@@ -1232,14 +1388,14 @@ def test_mlp(device, model, data, metric):
 
 def training_mlp(device, model, optimizer, scheduler, criterion, data, n_epochs, fold, wandb):
     """
-    Trains a multi-layer perceptron (MLP) model using the specified device, optimizer, scheduler, criterion, data, and number of epochs. Logs in wandb.
+    Trains a multi-layer perceptron (MLP) model using the specified device, optimizer, scheduler, criterion, data_processing, and number of epochs. Logs in wandb.
     Args:
         device (torch.device): The device to be used for training (e.g., 'cuda' for GPU or 'cpu' for CPU).
         model (torch.nn.Module): The MLP model to be trained.
         optimizer (torch.optim.Optimizer): The optimizer used for updating the model's parameters.
         scheduler (torch.optim.lr_scheduler._LRScheduler): The learning rate scheduler used for adjusting the learning rate during training.
         criterion (torch.nn.Module): The loss function used for computing the training loss.
-        data (torch.utils.data.Dataset): The dataset used for training, validation, and testing.
+        data (torch.utils.data_processing.Dataset): The dataset used for training, validation, and testing.
         n_epochs (int): The number of training epochs.
         fold (int): The fold number for tracking the performance and loss.
     Returns:
@@ -1327,7 +1483,7 @@ def training_mlp(device, model, optimizer, scheduler, criterion, data, n_epochs,
                    f'test/Specificity-{fold}': test_perf["Specificity"].detach().numpy().item(),
                    f'test/F1-{fold}': test_perf["F1"].detach().numpy().item()
                    }) #, step=epoch)
-        if epoch % 5 == 0:
+        if epoch % 50 == 0:
             print(f"Epoch {epoch}",
                   f"Loss train {train_loss}",
                   f"Loss validation {val_loss}",
@@ -1359,7 +1515,7 @@ def training_mlp_nowandb(device, model, optimizer, scheduler, criterion, data, n
         optimizer (torch.optim.Optimizer): The optimizer for updating model parameters.
         scheduler (torch.optim.lr_scheduler._LRScheduler): The learning rate scheduler.
         criterion (torch.nn.Module): The loss function.
-        data (torch.utils.data.DataLoader): The data loader for training, validation, and testing data.
+        data (torch.utils.data_processing.DataLoader): The data_processing loader for training, validation, and testing data_processing.
         n_epochs (int): The number of training epochs.
         fold (int): The fold number.
     Returns:
@@ -1406,7 +1562,7 @@ def training_mlp_nowandb(device, model, optimizer, scheduler, criterion, data, n
         test_perf = test_mlp(device, model, data, test_metrics)
         for m in perf_metrics.keys():
                 perf_metrics[m].append([train_perf[m].detach().numpy().item(), val_perf[m].detach().numpy().item(), test_perf[m].detach().numpy().item()])
-        if epoch % 5 == 0:
+        if epoch % 50 == 0:
             print(f"Epoch {epoch}",
                   f"Loss train {train_loss}",
                   f"Loss validation {val_loss}",
@@ -1481,7 +1637,7 @@ def feature_importance_gnnexplainer(model, data, names_list=None, save_fig=False
     Calculate the feature importance using the GNN-Explainer model.
     Args:
         model (torch.nn.Module): The GNN model.
-        data (torch_geometric.data.Data): The input data.
+        data (torch_geometric.data.Data): The input data_processing.
         names_list (list, optional): List of feature names. Defaults to None.
         save_fig (bool, optional): Whether to save the feature importance plot and subgraph visualization plot. Defaults to False.
         name_file (str, optional): The name of the saved files. Defaults to 'feature_importance'.
@@ -1496,7 +1652,7 @@ def feature_importance_gnnexplainer(model, data, names_list=None, save_fig=False
         algorithm=GNNExplainer(epochs=200),
         explanation_type='model',
         node_mask_type='attributes',
-        edge_mask_type='object',
+        edge_mask_type=None,
         model_config=dict(
             mode='multiclass_classification',
             task_level='node',
@@ -1517,24 +1673,24 @@ def feature_importance_gnnexplainer(model, data, names_list=None, save_fig=False
     else:
         explanation = explainer(x=data.x, edge_index=data.edge_index, edge_weight=data.edge_attr.to(torch.float32)) # GCN, CHEBYNET, GUNet
     # elif ("_uw" in model_name or "GPST" in model_name) and not model_name == "GTC_uw":  # for unweighted models
-    #     explanation = explainer(x=data.x, edge_index=data.edge_index)
+    #     explanation = explainer(x=data_processing.x, edge_index=data_processing.edge_index)
     # elif "GAT" in model_name or "GTC" in model_name or "GINE" in model_name:
-    #     explanation = explainer(x=data.x, edge_index=data.edge_index, edge_attr=data.edge_attr.to(torch.float32))
+    #     explanation = explainer(x=data_processing.x, edge_index=data_processing.edge_index, edge_attr=data_processing.edge_attr.to(torch.float32))
     # else:
-    #     explanation = explainer(x=data.x, edge_index=data.edge_index, edge_weight=data.edge_attr.to(torch.float32))
+    #     explanation = explainer(x=data_processing.x, edge_index=data_processing.edge_index, edge_weight=data_processing.edge_attr.to(torch.float32))
     print(f'Generated explanations in {explanation.available_explanations}')
     if save_fig:
         if path is None:
             path = os.getcwd() + "/"
-        feat_importance = explanation.visualize_feature_importance(str(path) + name_file + ".png",
-                                                                   top_k=n, feat_labels=names_list)
+        #feat_importance = explanation.visualize_feature_importance(str(path) + name_file + ".png",
+        #                                                           top_k=n, feat_labels=names_list)
         print(f"Feature importance plot has been saved to '{path}'")
         feat_importance = get_feature_importance(explanation, names_list, top_k=n)
         #node_importance = explanation.visualize_graph(path + name_file + "_subgraph.pdf")
         #print(f"Subgraph visualization plot has been saved to '{path}'")
     else:
-        feat_importance = explanation.visualize_feature_importance(path=None,
-                                                                   top_k=n, feat_labels=names_list)
+        #feat_importance = explanation.visualize_feature_importance(path=None,
+        #                                                           top_k=n, feat_labels=names_list)
         feat_importance = get_feature_importance(explanation, names_list, top_k=n)
         #node_importance = explanation.visualize_graph(path=None)
     return feat_importance #, node_importance
@@ -1545,7 +1701,7 @@ def feature_importances_shap_values(model, data, X, device, names_list=None, n=2
     Extracts the top n relevant features based on SHAP values in an ordered way
     Parameters:
         model (torch.nn.Module): The trained PyTorch model.
-        data (torch.Tensor): The input data for the model.
+        data (torch.Tensor): The input data_processing for the model.
         X (pandas.DataFrame): The feature matrix.
         names_list (list, optional): The list of feature names. If not provided, the column names of X will be used.
         n (int, optional): The number of top features to extract. Default is 20.
@@ -1554,11 +1710,11 @@ def feature_importances_shap_values(model, data, X, device, names_list=None, n=2
     """
     # generate shap values
 
-    # Define function to wrap model to transform data to tensor
+    # Define function to wrap model to transform data_processing to tensor
     f = lambda x: model(Variable(torch.from_numpy(x).to(device)), data.edge_index).detach().cpu().numpy()
 
-    #explainer = shap.KernelExplainer(f, data.x.cpu().detach().numpy())
-    #shap_values = explainer.shap_values(data.x.cpu().detach().numpy()) # takes a long time
+    #explainer = shap.KernelExplainer(f, data_processing.x.cpu().detach().numpy())
+    #shap_values = explainer.shap_values(data_processing.x.cpu().detach().numpy()) # takes a long time
     explainer = shap.KernelExplainer(f, shap.sample(data.x.cpu().detach().numpy(), 10))
     warnings.filterwarnings('ignore', 'The default of \'normalize\' will be set to False in version 1.2 and deprecated in version 1.4.*')
     shap_values = explainer.shap_values(data.x.cpu().detach().numpy())
@@ -1597,11 +1753,11 @@ def embeddings_2pca(embeddings):
 
 class GraphMasker:
     """
-    A class for masking graph data.
+    A class for masking graph data_processing.
     Args:
-        data (torch_geometric.data.Data): The input graph data.
+        data (torch_geometric.data.Data): The input graph data_processing.
     Attributes:
-        data (torch_geometric.data.Data): The input graph data.
+        data (torch_geometric.data.Data): The input graph data_processing.
         x (torch.Tensor): The node feature matrix.
         edge_index (torch.Tensor): The edge index matrix.
         shape (torch.Size): The shape of the node feature matrix.
@@ -1646,41 +1802,182 @@ def build_sparse_mask(dense_mask, k):
     sparse_mask = torch.cat((sparse_mask, k_connections), dim=0)
     return sparse_mask, in_features, out_features
 
-def compress_dir(dir):
-    dir = os.path.normpath(dir)
-    comp_filename = os.path.basename(dir) + "-files.tar.gz"
-    comp_file_path = os.path.join(dir, comp_filename)
-    with tarfile.open(comp_file_path, 'w:gz') as tar: # Create a tar.gz file for compression
-        for entry in os.scandir(dir):
-            if entry.is_file(): # Add only files to the tar archive
-                tar.add(entry.path, arcname=entry.name)
-    return comp_filename
 
-def rm_files(dir):
-    for entry in os.scandir(dir):
-        if entry.is_file() and not entry.name.endswith('.tar.gz'): # Remove all files except the compressed tar.gz file
-            os.remove(entry.path)
+def get_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--no-cuda', action='store_true', default=False,
+                        help='Disables CUDA training.')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--nhid', type=int, default=64)
+    parser.add_argument('--dataset', type=str, default='cora')
+    parser.add_argument('--size', type=int, default=100)
+
+    parser.add_argument('--batch_nums', type=int, default=6000, help='number of batches per epoch')
+    parser.add_argument('--batch_size', type=int, default=40, help='number of batches per epoch')
+
+    parser.add_argument('--imbalance', action='store_true', default=False)
+    parser.add_argument('--setting', type=str, default='no',
+                        choices=['no', 'upsampling', 'smote', 'reweight', 'embed_up', 'recon', 'newG_cls',
+                                 'recon_newG'])
+    # upsampling: oversample in the raw input; smote: ; reweight: reweight minority classes;
+    # embed_up:
+    # recon: pretrain; newG_cls: pretrained decoder; recon_newG: also finetune the decoder
+
+    parser.add_argument('--opt_new_G', action='store_true',
+                        default=False)  # whether optimize the decoded graph based on classification result.
+    parser.add_argument('--load', type=str, default=None)
+    parser.add_argument('--up_scale', type=float, default=1)
+    parser.add_argument('--im_ratio', type=float, default=0.5)
+    parser.add_argument('--rec_weight', type=float, default=0.000001)
+
+    parser.add_argument('--config', type=str, required=True, help='Path to YAML config file')
+    parser.add_argument('--out_dir', type=str, required=True, help='Directory for outputs')
+    parser.add_argument('--mastertable', type=str, required=True, help='Path to mastertable CSV')
+    parser.add_argument('--modality', type=str, choices=["geno", "rna", "fused"], default="fused",
+                        help='Modality to train on')
+    parser.add_argument('--model', type=str, choices=["GCNN", "MLP2", "GAT", "DOS_GNN"], default="GCNN")
+    parser.add_argument('--threshold', type=int, choices=[-2, -3, -4], required=True,
+                        help='Threshold for binarizing MoCA change')
+
+    return parser
+
+def accuracy(output, labels):
+    preds = output.max(1)[1].type_as(labels)
+    correct = preds.eq(labels).double()
+    correct = correct.sum()
+    return correct / len(labels)
+
+def print_class_acc(output, labels, class_num_list, pre='valid'):
+    pre_num = 0
+    # print class-wise performance
+    '''
+    for i in range(labels.max()+1):
+
+        cur_tpr = accuracy(output[pre_num:pre_num+class_num_list[i]], labels[pre_num:pre_num+class_num_list[i]])
+        print(str(pre)+" class {:d} True Positive Rate: {:.3f}".format(i,cur_tpr.item()))
+
+        index_negative = labels != i
+        labels_negative = labels.new(labels.shape).fill_(i)
+
+        cur_fpr = accuracy(output[index_negative,:], labels_negative[index_negative])
+        print(str(pre)+" class {:d} False Positive Rate: {:.3f}".format(i,cur_fpr.item()))
+
+        pre_num = pre_num + class_num_list[i]
+    '''
+
+    # ipdb.set_trace()
+    if labels.max() > 1:
+        auc_score = roc_auc_score(labels.detach(), F.softmax(output, dim=-1).detach(), average='macro',
+                                  multi_class='ovr')
+    else:
+        auc_score = roc_auc_score(labels.detach(), F.softmax(output, dim=-1)[:, 1].detach(), average='macro')
+
+    macro_F = f1_score(labels.detach(), torch.argmax(output, dim=-1).detach(), average='macro')
+    print(str(pre) + ' current auc-roc score: {:f}, current macro_F score: {:f}'.format(auc_score, macro_F))
+
+    return
 
 
-def stratified_continuous_folds(y_continuous, n_splits=5, seed=42):
-    """
-    Turn a continuous target into 4 bins and return k-fold boolean masks for stratified splits.
-    Returns:
-        train_masks (list of torch.BoolTensor): List of boolean masks for training set for each fold.
-        val_masks (list of torch.BoolTensor): List of boolean masks for validation set for each fold.
-    """
-    bins = [-np.inf, -3, -1, 0, np.inf]
-    labels = [0, 1, 2, 3]
-    y_binned = pd.cut(pd.Series(y_continuous), bins=bins, labels=labels).astype(int)
-    n = len(y_continuous)
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    train_masks = []
-    val_masks = []
-    for train_idx, val_idx in skf.split(np.zeros(n), y_binned):
-        train_mask = torch.zeros(n, dtype=torch.bool)
-        val_mask = torch.zeros(n, dtype=torch.bool)
-        train_mask[train_idx] = True
-        val_mask[val_idx] = True
-        train_masks.append(train_mask)
-        val_masks.append(val_mask)
-    return train_masks, val_masks
+def recon_upsample(embed, labels, idx_train, adj=None, portion=1.0, im_class_num=3):
+    c_largest = labels.max().item()
+    avg_number = int(idx_train.shape[0] / (c_largest + 1))
+    # ipdb.set_trace()
+    adj_new = None
+
+    for i in range(im_class_num):
+        chosen = idx_train[(labels == (c_largest - i))[idx_train]]
+        num = int(chosen.shape[0] * portion)
+        if portion == 0:
+            c_portion = int(avg_number / chosen.shape[0])
+            num = chosen.shape[0]
+        else:
+            c_portion = 1
+
+        for j in range(c_portion):
+            chosen = chosen[:num]
+
+            chosen_embed = embed[chosen, :]
+            distance = squareform(pdist(chosen_embed.cpu().detach()))
+            np.fill_diagonal(distance, distance.max() + 100)
+
+            idx_neighbor = distance.argmin(axis=-1)
+
+            interp_place = random.random()
+            new_embed = embed[chosen, :] + (chosen_embed[idx_neighbor, :] - embed[chosen, :]) * interp_place
+
+            new_labels = labels.new(torch.Size((chosen.shape[0], 1))).reshape(-1).fill_(c_largest - i)
+            idx_new = np.arange(embed.shape[0], embed.shape[0] + chosen.shape[0])
+            idx_train_append = idx_train.new(idx_new)
+
+            embed = torch.cat((embed, new_embed), 0)
+            labels = torch.cat((labels, new_labels), 0)
+            idx_train = torch.cat((idx_train, idx_train_append), 0)
+
+            if adj is not None:
+                if adj_new is None:
+                    adj_new = adj.new(torch.clamp_(adj[chosen, :] + adj[idx_neighbor, :], min=0.0, max=1.0))
+                else:
+                    temp = adj.new(torch.clamp_(adj[chosen, :] + adj[idx_neighbor, :], min=0.0, max=1.0))
+                    adj_new = torch.cat((adj_new, temp), 0)
+
+    if adj is not None:
+        add_num = adj_new.shape[0]
+        new_adj = adj.new(torch.Size((adj.shape[0] + add_num, adj.shape[0] + add_num))).fill_(0.0)
+        new_adj[:adj.shape[0], :adj.shape[0]] = adj[:, :]
+        new_adj[adj.shape[0]:, :adj.shape[0]] = adj_new[:, :]
+        new_adj[:adj.shape[0], adj.shape[0]:] = torch.transpose(adj_new, 0, 1)[:, :]
+
+        return embed, labels, idx_train, new_adj.detach()
+
+    else:
+        return embed, labels, idx_train
+
+
+def adj_mse_loss(adj_rec, adj_tgt, adj_mask=None):
+    edge_num = adj_tgt.nonzero().shape[0]
+    total_num = adj_tgt.shape[0] ** 2
+
+    neg_weight = edge_num / (total_num - edge_num)
+
+    weight_matrix = adj_rec.new(adj_tgt.shape).fill_(1.0)
+    weight_matrix[adj_tgt == 0] = neg_weight
+
+    loss = torch.sum(weight_matrix * (adj_rec - adj_tgt) ** 2)
+
+    return loss
+
+
+def load_data(mastertable, adj_path, modality, threshold, k, outer_fold):
+    # output: adj, features, labels are all torch.tensor, in the dense form
+    # -------------------------------------------------------
+
+    mastertable_file = f"{mastertable}_fold_{outer_fold}_thresh_{threshold}.csv"
+    W = np.load(
+        f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/fused_datasets/affinity_matrices/W_{modality}_fold_{outer_fold}_thresh_{threshold}.npy")
+    if k > 0:
+        W_sparse = np.zeros_like(W)
+        for i in range(W.shape[0]):
+            row = W[i].copy()
+            row[i] = 0
+            topk_idx = np.argpartition(row, -k)[-k:]
+            W_sparse[i, topk_idx] = W[i, topk_idx]
+        W_sparse = np.maximum(W_sparse, W_sparse.T)
+        W = W_sparse
+    else:
+        print("Skipping sparsification — using full affinity matrix")
+
+    mastertable = pd.read_csv(mastertable_file, index_col="PATNO")
+
+    if modality == "geno":
+        mastertable = mastertable[[c for c in mastertable.columns if not c.startswith("ENSG")]]
+    elif modality == "rna":
+        mastertable = mastertable[
+            [c for c in mastertable.columns if c.startswith("ENSG")]
+            + ["label", "split", "age_at_visit", "SEX_M", "EDUCATION_YEARS"]
+            ]
+    # (fusion: leave all columns)
+
+    y = mastertable["label"].astype(int).to_numpy()
+    X = mastertable.drop(columns=["label", "split"]).to_numpy()
+
+    return W, X, y

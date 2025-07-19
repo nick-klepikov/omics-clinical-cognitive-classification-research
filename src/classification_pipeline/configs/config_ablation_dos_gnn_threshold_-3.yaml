@@ -1,0 +1,11 @@
+n_folds:             5
+n_epochs:            250
+
+cl1_hidden_units: 32
+cl2_hidden_units: 8
+dropout: 0.5
+ll_out_units: 2
+lr: 0.005
+lrscheduler_factor: 0.1
+mean_test_AUC: 0.6076922416687012
+weight_decay: 1e-4

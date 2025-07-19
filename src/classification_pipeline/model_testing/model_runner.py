@@ -1,7 +1,10 @@
-from functions import *
-from models import *
+from torch.optim import lr_scheduler
+
+from src.classification_pipeline.utils.utils import *
+from src.classification_pipeline.models.models import *
 from sklearn.utils import class_weight
 import networkx as nx
+import statistics
 import yaml
 from torch_geometric.utils import homophily
 import argparse
@@ -11,16 +14,36 @@ import numpy as np
 import pandas as pd, os
 import glob
 import time
+from sklearn.metrics          import (
+    roc_auc_score, accuracy_score, recall_score, precision_score, f1_score
+)
+
+
+def find_best_threshold(probs, labels, metric=f1_score):
+    thresholds = np.arange(0.1, 0.91, 0.01)
+    best_thresh = 0.5
+    best_score = -1
+    for t in thresholds:
+        preds = (probs >= t).astype(int)
+        score = metric(labels, preds)
+        if score > best_score:
+            best_score = score
+            best_thresh = t
+    return best_thresh, best_score
+
 
 # ------------ Argument parsing ------------
-parser = argparse.ArgumentParser(description="Train GCN on multi-omics data")
+parser = argparse.ArgumentParser(description="Train GCN on multi-omics data_processing")
 parser.add_argument('--config',      type=str, required=True, help='Path to YAML config file')
 parser.add_argument('--out_dir',     type=str, required=True, help='Directory for outputs')
 parser.add_argument('--mastertable', type=str, required=True, help='Path to mastertable CSV')
 parser.add_argument('--modality',   type=str, choices=["geno", "rna", "fused"], default="fused", help='Modality to train on')
-parser.add_argument('--model', type=str, choices=["GCNN", "MLP2", "GAT"], default="GCNN")
+parser.add_argument('--model', type=str, choices=["GCNN", "MLP2", "GAT", "DOS_GNN"], default="GCNN")
 parser.add_argument('--threshold', type=int, choices=[-2, -3, -4],  required=True, help='Threshold for binarizing MoCA change')
 args = parser.parse_args()
+
+# Set this variable to enable/disable class-weighted loss
+USE_WEIGHTED_LOSS = True  # Set to False to disable class-weighted loss
 
 # ------------ Load hyperparameters ------------
 with open(args.config, 'r') as f:
@@ -46,8 +69,10 @@ if matplotlib.get_backend() != 'agg':
 if __name__ == '__main__':
     total_start = time.time()
     outer_fold_medians = {
-        'outeer_fold': [], 'AUC': [], 'Accuracy': [], 'Recall': [], 'Specificity': [], 'F1': []
+        'outer_fold': [], 'AUC': [], 'Accuracy': [], 'Recall': [], 'Specificity': [], 'F1': []
     }
+
+    # noinspection PyUnboundLocalVariable
     for outer_fold in range(5):
         fold_start = time.time()
         # set seeds
@@ -60,18 +85,21 @@ if __name__ == '__main__':
 
         # Update mastertable file and adjacency matrix path
         mastertable_file = f"{args.mastertable}_fold_{outer_fold}_thresh_{args.threshold}.csv"
-        W = np.load(f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/fused_datasets/affinity_matrices/W_{args.modality}_fold_{outer_fold}_thresh_{args.threshold}.npy")
+        W = np.load(f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/fused_datasets/affinity_matrices/W_{args.modality}_fold_{outer_fold}_thresh_{args.threshold}.npy")
 
-        # # Sparsify W to top-k neighbors per row (excluding self)
-        # k = 10  # Fixed top-k value, can parameterize later
-        # W_sparse = np.zeros_like(W)
-        # for i in range(W.shape[0]):
-        #     row = W[i].copy()
-        #     row[i] = 0  # exclude self-loop
-        #     topk_idx = np.argpartition(row, -k)[-k:]
-        #     W_sparse[i, topk_idx] = W[i, topk_idx]
-        # W_sparse = np.maximum(W_sparse, W_sparse.T)  # Make symmetric
-        # W = W_sparse
+        # Sparsify W to top-k neighbors per row (excluding self)
+        k = 10    # Fixed top-k value; set to 0 to disable sparsification
+        if k > 0:
+            W_sparse = np.zeros_like(W)
+            for i in range(W.shape[0]):
+                row = W[i].copy()
+                row[i] = 0  # exclude self-loop
+                topk_idx = np.argpartition(row, -k)[-k:]
+                W_sparse[i, topk_idx] = W[i, topk_idx]
+            W_sparse = np.maximum(W_sparse, W_sparse.T)  # Make symmetric
+            W = W_sparse
+        else:
+            print("Skipping sparsification — using full affinity matrix")
 
         mastertable = pd.read_csv(mastertable_file, index_col="PATNO")
 
@@ -95,15 +123,14 @@ if __name__ == '__main__':
         y = mastertable["label"].astype(int)
         features_df = mastertable.drop(columns=["label", "split"])
         feat_names = features_df.columns.tolist()
-        # prepare label dict for plotting
-        labels_dict = y.to_dict()
+        print(f"DEBUG: Loaded features_df shape = {features_df.shape}")   # (n_samples, n_features)
+        print(f"DEBUG: Number of features = {len(feat_names)}")
+
         # feature names and numpy arrays
         features_name = features_df.columns
         y = y.to_numpy()
         X = features_df.to_numpy()
         X_indices = features_df.index
-
-        pos = get_pos_similarity(features_df)
 
         # cross-validation
         folds = config["n_folds"]
@@ -134,8 +161,13 @@ if __name__ == '__main__':
             raw_val.append(mask_val)
 
 
+        # Collect thresholds for each inner fold for use in outer test threshold selection
+        roc_dfs = []
+        roc_probs_list = []
+        roc_labels_list = []
+        inner_thresholds = []
         for fold, (train_msk, val_msk) in enumerate(zip(raw_train, raw_val)):
-            # define data splits
+            # define data_processing splits
             X_train, X_val = X[train_msk], X[val_msk]
             y_train, y_val = y[train_msk], y[val_msk]
 
@@ -145,30 +177,12 @@ if __name__ == '__main__':
             # Use this as adjacency
             adj = adj_df
 
-            # create graph data object
+            # create graph data_processing object
             data = create_pyg_data(adj, pd.DataFrame(data=X, columns=features_name, index=X_indices), y, train_msk, val_msk,
                                    test_mask)
 
-            # G = nx.from_pandas_adjacency(adj)
-            # # plot network
-            # display_graph(
-            #     fold,
-            #     G,
-            #     pos,
-            #     labels_dict,
-            #     save_fig=True,
-            #     path=OUT_DIR,
-            #     name_file=f"fold_{outer_fold}_{fold}_network.png",
-            #     plot_title=f"Network - outer fold {outer_fold} - fold {fold}",
-            #     wandb_log=False
-            # )
-            # create graph data object
-            if "GTC_uw" in args.model:
-                data.edge_attr = torch.ones((data.edge_index.shape[1], 1), device=data.edge_index.device)
-            elif "GTC" in args.model or "GINE" in args.model:
-                data.edge_attr = data.edge_attr.unsqueeze(-1)
-            if "GPST" in args.model:
-                data.x, feat_names = pad_features(data.x, config["heads"], feat_names)
+
+
             # Compute raw homophily (edge homophily)
             H_raw = homophily(data.edge_index, data.y, method='edge')
             # Compute class proportions over all nodes
@@ -181,29 +195,60 @@ if __name__ == '__main__':
             H_norm = (H_raw - H_baseline) / (1.0 - H_baseline) if (1.0 - H_baseline) > 0 else 0.0
             homophily_index = H_norm
             print(f'Normalized homophily index: {homophily_index:.4f} (raw: {H_raw:.4f}, baseline: {H_baseline:.4f})')
+            # Compute minority-class homophily (edges touching minority that stay within minority)
+            edges = data.edge_index.cpu().numpy().T
+            y_all = data.y.cpu().numpy()
+            # Determine which label is minority
+            classes, counts = np.unique(y_all, return_counts=True)
+            minor_label = classes[np.argmin(counts)]
+            # Mask edges that involve any minority node
+            mask_touch_min = (y_all[edges[:,0]] == minor_label) | (y_all[edges[:,1]] == minor_label)
+            edges_min = edges[mask_touch_min]
+            # Compute fraction of those edges linking two minority nodes
+            if edges_min.shape[0] > 0:
+                same_min = (y_all[edges_min[:,0]] == y_all[edges_min[:,1]]).sum()
+                r_min = same_min / edges_min.shape[0]
+            else:
+                r_min = 0.0
+            print(f'Minority-class homophily: {r_min:.4f}, heterophily: {1.0 - r_min:.4f}')
 
             # model
             model = generate_model(args.model, config, data)
             model.apply(init_weights)
             model = model.to(device)
-            # compute class weights for loss function
-            train_labels = data.y[data.train_mask].cpu().numpy().astype(int)
 
-            class_weights = class_weight.compute_class_weight(class_weight='balanced',
-                                                              classes=np.array([0, 1]),
-                                                              y=train_labels)
-            class_weights = torch.tensor(class_weights, dtype=torch.float)
-            criterion = nn.CrossEntropyLoss(weight=class_weights, reduction="mean")
+            # --- compute class weights for loss function using sklearn.utils.class_weight ---
+            if USE_WEIGHTED_LOSS:
+                from sklearn.utils.class_weight import compute_class_weight
+                import numpy as np
+                # y_train: 1D tensor of labels for current training set
+                y_train = data.y[data.train_mask].cpu().numpy()
+                unique_classes = np.unique(y_train)
+                class_weights = compute_class_weight(class_weight="balanced", classes=unique_classes, y=y_train)
+                class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
+                criterion = nn.CrossEntropyLoss(weight=class_weights, reduction="mean")
+            else:
+                criterion = nn.CrossEntropyLoss(reduction="mean")
             criterion.to(device)
-            optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
+
+            # Ensure numeric types for hyperparameters
+            lr = float(config["lr"])
+            wd = float(config["weight_decay"])
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
             scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=config["lrscheduler_factor"],
                                                        threshold=0.0001, patience=15,
                                                        verbose=True)
-            n_epochs = config["n_epochs"]
+            n_epochs = int(config["n_epochs"])
             if "MLP" in model._get_name():
                 data.edge_index = torch.empty((2, 0), dtype=torch.long).to(device)
                 # training for non graph methods
                 losses, performance, best_epoch, best_loss, best_model = training_mlp_nowandb(device, model, optimizer, scheduler, criterion, data, n_epochs, fold)
+            elif "DOS" in model._get_name().upper():
+                # DOS-GNN: backbone + SMOTE head
+                (losses, performance, best_epoch, best_loss, best_model,
+                 head_losses, head_perf, head_best_epoch, head_best_loss, best_head) = training_nowandb_dos_gnn(
+                    device, model, optimizer, scheduler, criterion, data, n_epochs, fold)
+                # Only use backbone performance and best_epoch for downstream logic
             else:
                 # training for graph methods
                 losses, performance, best_epoch, best_loss, best_model = training_nowandb(device, model, optimizer,
@@ -221,12 +266,34 @@ if __name__ == '__main__':
             # Build raw importance dict for plotting (feature->score)
             raw_imp = feat_imp_ser['Importance_score'].to_dict()
             feat_labels = feat_imp_ser.index.tolist()
+
             fold_v_performance, fold_test_performance, features_track = update_overall_metrics(
                 fold, best_epoch, homophily_index, feat_names, feat_labels, raw_imp, performance, losses,
                 fold_v_performance, fold_test_performance, features_track
             )
 
-            # reset parameters
+            # Use the best-performing checkpoint for evaluation
+            model = best_model
+            model.eval()
+            with torch.no_grad():
+                logits = model(data.x.to(device).float(), data.edge_index.to(device), data.edge_attr.to(device).float())
+                probs = torch.softmax(logits[data.test_mask], dim=1)[:, 1].detach().cpu().numpy()
+                labels = data.y[data.test_mask].cpu().numpy()
+                patnos = np.array(data.PATNO)[data.test_mask.cpu().numpy()] if hasattr(data, "PATNO") else np.arange(len(labels))
+                print("Length PATNO:", len(patnos))
+                print("Length y_true:", len(labels))
+                print("Length y_score:", len(probs))
+                print("Class distribution (0,1) in test labels:", np.bincount(labels))
+
+                # Find best threshold for inner fold using F1
+                best_thresh, best_f1 = find_best_threshold(probs, labels, metric=f1_score)
+                inner_thresholds.append(best_thresh)
+                print(f"[Threshold Tuning] Best threshold: {best_thresh:.2f}, F1: {best_f1:.3f}")
+
+
+            roc_probs_list.append(probs)
+            roc_labels_list.append(labels)
+
             # reset parameters
             for name, module in model.named_children():
                 if isinstance(module, torch.nn.ModuleList):
@@ -237,13 +304,6 @@ if __name__ == '__main__':
                     if hasattr(module, 'reset_parameters'):
                         module.reset_parameters()
 
-        # exports & plots performance & losses
-        #pd.DataFrame.from_dict(features_track).to_csv(OUT_DIR + f"fold_{outer_fold}_features_track.csv", index=False)
-
-        #pd.DataFrame.from_dict(fold_test_performance).to_csv(OUT_DIR + f"fold_{outer_fold}_test_performance.csv", index=False)
-
-            #pd.DataFrame.from_dict(fold_v_performance).to_csv(OUT_DIR + f"fold_{outer_fold}_val_performance.csv", index=False)
-        # Select the inner-fold index whose test AUC is the median
         auc_list = fold_test_performance['AUC']
         median_auc = np.median(auc_list)
         # find the index of the fold whose AUC is closest to median
@@ -251,17 +311,44 @@ if __name__ == '__main__':
         print(f"Outer fold {outer_fold}: median AUC = {median_auc:.4f}, selected inner fold = {idx}")
         # retrieve the corresponding epoch and other metrics
         best_epoch = fold_v_performance['N_epoch'][idx]
+        # Save ROC inputs only for the median inner fold
+        median_labels = roc_labels_list[idx]
+        median_probs  = roc_probs_list[idx]
+        pd.DataFrame({"y_true": median_labels, "y_score": median_probs}).to_csv(
+            os.path.join(
+                OUT_DIR,
+                f"roc_inputs_{args.model}_{args.modality}_fold{outer_fold}_thr{args.threshold}.csv"
+            ),
+            index=False
+        )
+
+
+        # --- Use the median inner fold's threshold for test set predictions ---
+        # inner_thresholds has one entry per inner fold
+        median_fold_idx = idx
+        median_thresh = inner_thresholds[median_fold_idx]
+
+        test_probs = roc_probs_list[median_fold_idx]
+        test_labels = roc_labels_list[median_fold_idx]
+        test_preds = (test_probs >= median_thresh).astype(int)
+        acc = accuracy_score(test_labels, test_preds)
+        rec = recall_score(test_labels, test_preds)
+        prec = precision_score(test_labels, test_preds)
+        auc = roc_auc_score(test_labels, test_probs)
+        f1 = f1_score(test_labels, test_preds)
+        print(f"[Threshold Tuning] Using median inner fold threshold: {median_thresh:.2f}, Test F1 = {f1:.3f}")
+
+
         selected_metrics = {
             'Fold': outer_fold,
             'Selected_Fold': idx,
             'Epoch': best_epoch,
-            'AUC': fold_test_performance['AUC'][idx],
-            'Accuracy': fold_test_performance['Accuracy'][idx],
-            'Recall': fold_test_performance['Recall'][idx],
+            'AUC': auc,
+            'Accuracy': acc,
+            'Recall': rec,
             'Specificity': fold_test_performance['Specificity'][idx],
-            'F1': fold_test_performance['F1'][idx]
+            'F1': f1
         }
-        # Debug print removed
 
         pd.DataFrame([selected_metrics]).to_csv(os.path.join(OUT_DIR, f"fold_{outer_fold}_selected_metrics.csv"), index=False)
         # Save selected feature importances for the median fold with Feature as column
@@ -288,11 +375,27 @@ if __name__ == '__main__':
     for m in ['AUC', 'Accuracy', 'Recall', 'Specificity', 'F1']:
         summary[f"{m}_mean"] = np.mean(outer_fold_medians[m])
         summary[f"{m}_std"] = np.std(outer_fold_medians[m])
+    sparsity_suffix = f"_k{k}" if k > 0 else "_full"
+    summary_filename = f"{model_name}_{modality_name}_thr{threshold_value}{sparsity_suffix}_ablation_final_summary.csv"
     pd.DataFrame([summary]).to_csv(
-        os.path.join(OUT_DIR, f"{model_name}_{modality_name}_thr{threshold_value}_ablation_final_summary.csv"),
+        os.path.join(OUT_DIR, summary_filename),
         index=False
     )
-    print("Final nested-CV median-based summary:", summary)
+    # === AUC CONSISTENCY CHECK ===
+    # Recompute mean±std AUC from saved ROC-input CSVs
+    pattern = os.path.join(
+        OUT_DIR,
+        f"roc_inputs_{model_name}_{modality_name}_fold*_thr{threshold_value}.csv"
+    )
+    roc_files = sorted(glob.glob(pattern))
+    plot_aucs = []
+    for rf in roc_files:
+        df_roc = pd.read_csv(rf)
+        plot_aucs.append(roc_auc_score(df_roc['y_true'], df_roc['y_score']))
+    mean_plot_auc = np.mean(plot_aucs)
+    std_plot_auc  = np.std(plot_aucs)
+    print(f"Summary AUC    = {summary['AUC_mean']:.3f} ± {summary['AUC_std']:.3f}")
+    print(f"Plot-based AUC = {mean_plot_auc:.3f} ± {std_plot_auc:.3f}")
 
     # --- aggregate feature importances across outer folds ---
     try:
@@ -323,11 +426,12 @@ if __name__ == '__main__':
         )
 
         # Save the final ranking
+        imp_filename = f"{model_name}_{modality_name}_thr{threshold_value}{sparsity_suffix}_final_feature_ranking.csv"
         summary_imp.to_csv(
-            os.path.join(OUT_DIR, f"{model_name}_{modality_name}_thr{threshold_value}_final_feature_ranking.csv"),
+            os.path.join(OUT_DIR, imp_filename),
             index=False
         )
-        print(f"Saved final feature ranking to {model_name}_{modality_name}_thr{threshold_value}_final_feature_ranking.csv")
+        print(f"Saved final feature ranking to {imp_filename}")
         print("Saved final feature ranking to final_feature_ranking.csv")
     except ValueError:
         print("Warning: No feature importance files to aggregate.")

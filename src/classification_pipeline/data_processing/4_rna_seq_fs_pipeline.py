@@ -13,7 +13,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.utils import resample
 import joblib
 
-# Log2(+1) transform for gene data
+# Log2(+1) transform for gene data_processing
 def log2_plus_one(X):
     return np.log2(X + 1)
 
@@ -102,14 +102,14 @@ class EnLassoTransformer(BaseEstimator, TransformerMixin):
 
 def main():
     parser = argparse.ArgumentParser(description="RNA-seq Feature Selection Pipeline")
-    parser.add_argument('--threshold', type=int, choices={-2, -3, -4}, required=True, help="Threshold used in file names")
+    parser.add_argument('--threshold', type=int, choices={-2, -3, -4, -5}, required=True, help="Threshold used in file names")
     args = parser.parse_args()
     threshold = args.threshold
 
     # Repeat for each fold
     for fold in range(5):
-        # Load training data (with threshold and fold in filename)
-        train_path = f'/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/rna_plus_clinical_final_fold_{fold}_thresh_{threshold}.csv'
+        # Load training data_processing (with threshold and fold in filename)
+        train_path = f'/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/final_datasets_processed/rna_plus_clinical_final_fold_{fold}_thresh_{threshold}.csv'
         df_train = pd.read_csv(train_path)
         ids = df_train['PATNO'].values
 
@@ -142,7 +142,7 @@ def main():
         fs_pipe = Pipeline([
             ('pre',      preprocessor),
             ('fisher',  FisherFilter(k=1000)),
-            ('enlasso',  EnLassoTransformer(n_runs=100, alpha=0.01, top_k=20, random_state=42)),
+            ('enlasso',  EnLassoTransformer(n_runs=100, alpha=0.01, top_k=40, random_state=42)),
         ])
 
         # Fit pipeline
@@ -181,18 +181,18 @@ def main():
         rna_and_clin_pre.fit(X_train_sel)
 
         # Save the fitted preprocessor
-        rna_path = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/preprocessing_pipeline/rna_and_clin_prep_fold_{fold}_thresh_{threshold}.joblib"
+        rna_path = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/preprocessing_pipeline/rna_and_clin_prep_fold_{fold}_thresh_{threshold}.joblib"
         joblib.dump(rna_and_clin_pre, rna_path)
         print(f"[Fold {fold}] Saved RNA-only preprocessor to {rna_path}")
 
-        # Transform training data with full pipeline
+        # Transform training data_processing with full pipeline
         X_train_trans = fs_pipe.transform(X_train)
         df_train_trans = pd.DataFrame(X_train_trans, columns=selected_features)
         df_train_trans.insert(0, 'PATNO', ids)
         df_train_trans.insert(1, 'label', y_train)
 
         # Save transformed features
-        out_trans = f'/Users/nickq/Documents/Pioneer Academics/Research_Project/data/final_datasets_preprocessed/lasso_output/rna_seq_train_transformed_features_fold_{fold}_thresh_{threshold}.csv'
+        out_trans = f'/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/final_datasets_processed/lasso_output/rna_seq_train_transformed_features_fold_{fold}_thresh_{threshold}.csv'
         df_train_trans.to_csv(out_trans, index=False)
 
 
