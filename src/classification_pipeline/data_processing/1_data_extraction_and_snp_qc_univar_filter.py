@@ -1,14 +1,13 @@
-import pandas as pd  # data_processing manipulation
-import re  # regex for filename parsing
+import pandas as pd
+import re
 from pandas_plink import read_plink
 import numpy as np
 import glob
 import os
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import StratifiedKFold
 import argparse
 
-# Parse threshold argument for binarizing MoCA change
-parser = argparse.ArgumentParser(description="Generate mastertable with given threshold")
+parser = argparse.ArgumentParser(description="MoCA change threshold")
 parser.add_argument('--threshold', type=int, choices=[-2, -3, -4, -5],  required=True, help='Threshold for binarizing MoCA change')
 args = parser.parse_args()
 
@@ -20,7 +19,6 @@ df_clin = pd.read_excel(
     dtype={"PATNO": str}
 )
 
-# Filter for baseline and 12-month, only "Sporadic PD"
 if "EVENT_ID" in df_clin.columns:
     df_clin_bl = df_clin[(df_clin["EVENT_ID"] == "BL") & (df_clin["subgroup"] == "Sporadic PD")].copy()
     df_v04 = df_clin[(df_clin["EVENT_ID"] == "V04") & (df_clin["subgroup"] == "Sporadic PD")].copy()
@@ -30,36 +28,29 @@ if "EVENT_ID" in df_clin.columns:
     if "moca_12m" in df_v04.columns:
         v04_keep.append("moca_12m")
     df_v04 = df_v04[v04_keep]
-    # Merge baseline and 12m MoCA
     df_clin = pd.merge(
         df_clin_bl,
         df_v04,
         on="PATNO",
         how="left"
     )
-    # Remove subjects missing MoCA at either timepoint
     df_clin = df_clin.dropna(subset=["moca", "moca_12m"]).reset_index(drop=True)
     df_clin["moca"] = pd.to_numeric(df_clin["moca"], errors="coerce")
     df_clin["moca_12m"] = pd.to_numeric(df_clin["moca_12m"], errors="coerce")
     df_clin["moca_change"] = df_clin["moca_12m"] - df_clin["moca"]
     df_clin["label"] = (df_clin["moca_change"] <= args.threshold).astype(int)
 
-# Keep only relevant clinical columns
 keep_cols = ["PATNO", "age_at_visit", "SEX", "EDUCYRS", "label"]
 df_clin = df_clin[[c for c in keep_cols if c in df_clin.columns]].copy()
 
-# Encode SEX as binary (1 = male)
 if 'SEX' in df_clin.columns:
     df_clin["SEX_M"] = df_clin["SEX"].astype(int)
     df_clin = df_clin.drop(columns=["SEX"], errors="ignore")
-    print("Encoded SEX → SEX_M column added")
 
-print(f"[1] Clinical → {len(df_clin)} rows, {len(df_clin.columns)} columns after filtering")
 clinic_patnos = set(df_clin["PATNO"])
 
 
 # ──────────────── 2) Genotyping Data ────────────────
-# Load IID→PATNO mapping
 df_link = pd.read_csv(
     "/Users/nickq/Documents/Pioneer Academics/Research_Project/data/raw/genetics/PPMI_244_Plink/ppmi_244_linklist.csv",
     dtype={"GP2sampleID": str, "PATNO": str, "COHORT": str})
@@ -67,22 +58,18 @@ clinic_iids = set(
     df_link.loc[df_link["PATNO"].isin(clinic_patnos), "GP2sampleID"]
 )
 
-# Load PLINK data_processing
 (bim, fam, bed) = read_plink("/Users/nickq/Documents/Pioneer Academics/Research_Project/data/raw/genetics/PPMI_244_Plink/nonGR_LONI_PPMI_MAY2023")
-# Filter samples to those with clinical data_processing
 keep_samples = fam["iid"].isin(clinic_iids).values
 fam = fam[keep_samples].reset_index(drop=True)
 bed = bed[:, keep_samples]
-full_mat = bed.compute()  # load genotype array into memory
+full_mat = bed.compute()
 sample_ids = fam.iid.values.tolist()
 snp_ids = bim.snp.values.tolist()
 
-# SNP QC: missingness, MAF, LD pruning
 snp_index_map = {s: idx for idx, s in enumerate(bim.snp.values.tolist())}
 batch_size = 10000
 good_snps = []
 for start in range(0, len(snp_ids), batch_size):
-    print(f"[QC: missing+MAF] Batch {start}-{min(start+batch_size, len(snp_ids))} of {len(snp_ids)} SNPs")
     batch = snp_ids[start:start+batch_size]
     arr = full_mat[[snp_index_map[s] for s in batch], :].T
     df_batch = pd.DataFrame(arr, columns=batch)
@@ -95,11 +82,9 @@ for start in range(0, len(snp_ids), batch_size):
     del df_batch
 good_snps = list(dict.fromkeys(good_snps))
 
-# LD pruning
 pruned = []
 WINDOW, STEP, R2 = 50, 5, 0.2
 for i in range(0, len(good_snps), STEP):
-    print(f"[QC: LD prune] Window start {i} of {len(good_snps)} SNPs")
     window = good_snps[i:i+WINDOW]
     arr = full_mat[[snp_index_map[s] for s in window], :].T
     df_window = pd.DataFrame(arr, columns=window)
@@ -121,9 +106,7 @@ for i in range(0, len(good_snps), STEP):
             removed.add(window[k])
     del df_window
 snp_ids = list(dict.fromkeys(pruned))
-print(f"[QC] SNPs reduced to {len(snp_ids)} after missingness, MAF, LD pruning")
 
-# Build genotype matrix DataFrame
 geno_matrix = full_mat[[snp_index_map[s] for s in snp_ids], :]
 geno_matrix = geno_matrix.T
 df_geno = pd.DataFrame(
@@ -139,18 +122,16 @@ df_geno_with_patno = pd.merge(
     how="inner"
 )
 
-# Merge genotype with clinical/cognitive
 df_master = pd.merge(
     df_clin,
     df_geno_with_patno,
     on="PATNO",
     how="inner"
 )
-print(f"[2] Genotype merge → df_geno_with_patno has {len(df_geno_with_patno)} rows, df_master now has {len(df_master)} rows and {len(df_master.columns)} columns")
 
 # ──────────────── 3) RNA-seq Data ────────────────
 rna_keep_patnos = set(df_master["PATNO"].astype(str))
-rna_folder = "/Volumes/Seagate BUP Slim SL Media/Reseach_Project/data_processing/raw/rna_seq"
+rna_folder = "/Volumes/Seagate BUP Slim SL Media/Reseach_Project/data/raw/rna_seq"
 sf_paths = glob.glob(os.path.join(rna_folder, "*.salmon.genes.sf"))
 fail_folder = os.path.join(rna_folder, "fail")
 if not sf_paths:
@@ -163,7 +144,6 @@ for sf_path in sf_paths:
     basename = os.path.basename(sf_path)
     if "BL" not in basename:
         continue
-    # Extract PATNO from filename
     m = re.search(r"(IR3\.\d+)", basename)
     if not m:
         raise ValueError(f"Cannot extract sample ID from filename: {basename}")
@@ -183,7 +163,6 @@ for sf_path in sf_paths:
     tpm_dfs.append(df_sf)
 if not tpm_dfs:
     raise RuntimeError("No RNA .genes.sf files matched the PATNOs in df_master.")
-# Ensure all gene indices match
 canonical_genes = tpm_dfs[0].index.tolist()
 for df in tpm_dfs[1:]:
     if not df.index.equals(pd.Index(canonical_genes)):
@@ -195,18 +174,14 @@ df_tpm = (
     .reset_index()
     .rename(columns={"index": "PATNO"})
 )
-print(f"[3] RNA-seq processed → {len(df_tpm)} samples, {len(df_tpm.columns) - 1} genes")
 
-# Merge RNA-seq with master table
 df_master = pd.merge(
     df_master,
     df_tpm,
     on="PATNO",
     how="inner"
 )
-print(f"[4] Master table final → {len(df_master)} rows, {len(df_master.columns)} columns")
 
-# Feature column selection
 clinical_cols = [
     "PATNO",
     "age_at_visit",
@@ -230,7 +205,6 @@ os.makedirs(output_dir, exist_ok=True)
 for fold, (train_idx, test_idx) in enumerate(skf.split(df_master, df_master["label"])):
     df_train = df_master.iloc[train_idx].reset_index(drop=True)
     df_test = df_master.iloc[test_idx].reset_index(drop=True)
-    # Univariate SNP filtering (FDR) on training fold
     fdr_vals = {}
     for snp in genotype_cols:
         values = df_train[snp]
@@ -257,6 +231,3 @@ for fold, (train_idx, test_idx) in enumerate(skf.split(df_master, df_master["lab
     test_path = os.path.join(output_dir, f"test_fold_{fold}_thresh_{args.threshold}.csv")
     df_train_filtered.to_csv(train_path, index=False)
     df_test_filtered.to_csv(test_path, index=False)
-    print(f"[✓] Saved fold {fold} →")
-    print(f"    {train_path}")
-    print(f"    {test_path}")

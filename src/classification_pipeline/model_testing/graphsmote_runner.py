@@ -1,13 +1,9 @@
 import os
-import time
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import accuracy_score, recall_score, confusion_matrix, f1_score, roc_auc_score
 import yaml
-
-# --- torchmetrics and scheduler imports ---
-#
 
 import torch
 import torch.nn.functional as F
@@ -18,8 +14,10 @@ import src.classification_pipeline.utils.utils as utils
 import random
 
 import copy
-# will be set once splits are chosen
 class_num_mat = None
+
+USE_THRESHOLD_TUNING = True  # set to False to skip tuning (use 0.5)
+
 
 
 # Helper to (re-)initialize model weights for each CV fold
@@ -28,15 +26,24 @@ def init_weights(m):
     if hasattr(m, 'reset_parameters'):
         m.reset_parameters()
 
+def find_best_threshold(probs, labels, metric=f1_score):
+    thresholds = np.arange(0.1, 0.91, 0.01)
+    best_thresh = 0.5
+    best_score = -1
+    for t in thresholds:
+        preds = (probs >= t).astype(int)
+        score = metric(labels, preds)
+        if score > best_score:
+            best_score = score
+            best_thresh = t
+    return best_thresh, best_score
 
-# from torch.utils.tensorboard import SummaryWriter
 
 def train(epoch):
     W_new = W  # default to original adjacency
     loss_rec = torch.tensor(0.0, device=W.device)
     y_new = y
     idx_train_new = idx_train
-    t = time.time()
     encoder.train()
     classifier.train()
     decoder.train()
@@ -54,15 +61,12 @@ def train(epoch):
 
         loss_rec = utils.adj_mse_loss(generated_G[:ori_num, :][:, :ori_num], W.detach().to_dense())
 
-        # ipdb.set_trace()
-
         if not args.opt_new_G:
             W_new = copy.deepcopy(generated_G.detach())
             threshold = 0.5
             W_new[W_new < threshold] = 0.0
             W_new[W_new >= threshold] = 1.0
 
-            # ipdb.set_trace()
             edge_ac = W_new[:ori_num, :ori_num].eq(W.to_dense()).double().sum() / (ori_num ** 2)
         else:
             W_new = generated_G
@@ -71,39 +75,49 @@ def train(epoch):
         # calculate generation information
         exist_edge_prob = W_new[:ori_num, :ori_num].mean()  # edge prob for existing nodes
         generated_edge_prob = W_new[ori_num:, :ori_num].mean()  # edge prob for generated nodes
-        print("edge acc: {:.4f}, exist_edge_prob: {:.4f}, generated_edge_prob: {:.4f}".format(edge_ac.item(),
-                                                                                              exist_edge_prob.item(),
-                                                                                              generated_edge_prob.item()))
 
         W_new = torch.mul(W_up, W_new)
 
         exist_edge_prob = W_new[:ori_num, :ori_num].mean()  # edge prob for existing nodes
         generated_edge_prob = W_new[ori_num:, :ori_num].mean()  # edge prob for generated nodes
-        print("after filtering, edge acc: {:.4f}, exist_edge_prob: {:.4f}, generated_edge_prob: {:.4f}".format(
-            edge_ac.item(), exist_edge_prob.item(), generated_edge_prob.item()))
 
         W_new[:ori_num, :][:, :ori_num] = W.detach().to_dense()
-        # W_new = W_new.to_sparse()
-        # ipdb.set_trace()
 
         if not args.opt_new_G:
             W_new = W_new.detach()
 
         if args.setting == 'newG_cls':
             idx_train_new = idx_train
-
-    # ipdb.set_trace()
+    elif args.setting == 'embed_up':
+        # perform SMOTE in embedding space
+        embed, labels_new, idx_train_new = utils.recon_upsample(embed, y, idx_train, portion=args.up_scale,
+                                                                im_class_num=im_class_num)
+        W_new = W
+    else:
+        y_new = y
+        idx_train_new = idx_train
+        W_new = W
     output = classifier(embed, W_new)
 
     loss_train = F.cross_entropy(output[idx_train_new], y_new[idx_train_new])
 
     acc_train = utils.accuracy(output[idx_train], y_new[idx_train])
 
-    loss = loss_train + loss_rec * args.rec_weight
+    if args.setting == 'recon_newG':
+        loss = loss_train + loss_rec * args.rec_weight
+    elif args.setting == 'recon':
+        loss = loss_rec + 0 * loss_train
+    else:
+        loss = loss_train
+        loss_rec = loss_train
 
     loss.backward()
 
-    optimizer_en.step()
+    if args.setting == 'newG_cls':
+        optimizer_en.zero_grad()
+        optimizer_de.zero_grad()
+    else:
+        optimizer_en.step()
 
     optimizer_cls.step()
 
@@ -113,7 +127,6 @@ def train(epoch):
     loss_val = F.cross_entropy(output[idx_val], y[idx_val])
     acc_val = utils.accuracy(output[idx_val], y[idx_val])
 
-    # ipdb.set_trace()
     utils.print_class_acc(output[idx_val], y[idx_val], class_num_mat[:, 1])
 
     print('Epoch: {:05d}'.format(epoch + 1),
@@ -121,8 +134,7 @@ def train(epoch):
           'loss_rec: {:.4f}'.format(loss_rec.item()),
           'acc_train: {:.4f}'.format(acc_train.item()),
           'loss_val: {:.4f}'.format(loss_val.item()),
-          'acc_val: {:.4f}'.format(acc_val.item()),
-          'time: {:.4f}s'.format(time.time() - t))
+          'acc_val: {:.4f}'.format(acc_val.item()))
 
     # Return metrics for logging
     return loss_train.item(), loss_rec.item(), loss_val.item(), acc_val.item()
@@ -143,11 +155,6 @@ def test(epoch=0):
           "accuracy= {:.4f}".format(acc_test.item()))
 
     utils.print_class_acc(output[idx_test], y[idx_test], class_num_mat[:, 2], pre='test')
-
-    '''
-    if epoch==40:
-        torch
-    '''
 
 
 def save_model(epoch):
@@ -183,8 +190,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()
 
-    # start total timer
-    t_total_start = time.time()
 
     # Load YAML hyperparameters
     with open(args.config, 'r') as f:
@@ -212,7 +217,7 @@ if __name__ == '__main__':
             adj_path=adj_path,
             modality=args.modality,
             threshold=args.threshold,
-            k=10,
+            k=50,
             outer_fold=outer_fold
         )
         im_class_num = 1
@@ -258,6 +263,7 @@ if __name__ == '__main__':
         fold_test_specificities = []
         fold_test_f1s = []
         fold_best_epochs = []
+        inner_thresholds = []
 
         for ifold, (mask_tr, mask_va) in enumerate(zip(raw_train_masks, raw_val_masks)):
             print(f"--- Inner fold {ifold} ---")
@@ -277,10 +283,17 @@ if __name__ == '__main__':
             # Set global class_num_mat for use in train()
             class_num_mat = class_counts
 
+
             # 1) Build fresh models & reset weights per fold
-            encoder = models.GCN_En(nfeat=X.shape[1], nhid=args.nhid, nembed=args.nhid, dropout=float(config["dropout"]))
-            classifier = models.GCN_Classifier(nembed=args.nhid, nhid=args.nhid, nclass=int(y.max().item()) + 1,
-                                               dropout=float(config["dropout"]))
+            if args.setting != "embed_up":
+                encoder = models.GCN_En(nfeat=X.shape[1], nhid=args.nhid, nembed=args.nhid, dropout=float(config["dropout"]))
+                classifier = models.GCN_Classifier(nembed=args.nhid, nhid=args.nhid, nclass=int(y.max().item()) + 1,
+                                                   dropout=float(config["dropout"]))
+            else:
+                encoder = models.GCN_En2(nfeat=X.shape[1], nhid=args.nhid, nembed=args.nhid,
+                                        dropout=float(config["dropout"]))
+                classifier = models.GCN_Classifier(nembed=args.nhid, nhid=args.nhid, nclass=int(y.max().item()) + 1,
+                                                   dropout=float(config["dropout"]))
             decoder = models.Decoder(nembed=args.nhid, dropout=float(config["dropout"]))
             if args.cuda:
                 encoder, classifier, decoder = encoder.cuda(), classifier.cuda(), decoder.cuda()
@@ -317,16 +330,40 @@ if __name__ == '__main__':
             except NameError:
                 fold_best_epochs = [best_epoch]
 
+                # --- 3.5) Tune threshold on this inner fold’s validation set ---
+            if USE_THRESHOLD_TUNING:
+                encoder.eval()
+                classifier.eval()
+                with torch.no_grad():
+                    embed = encoder(X, W)
+                    logits = classifier(embed, W)
+                    # validation mask tensor
+                    val_mask_tensor = mask_va
+                    # compute validation probabilities and labels
+                    val_probs = torch.softmax(logits[val_mask_tensor], dim=1)[:, 1].cpu().numpy()
+                    val_labels = y[val_mask_tensor].cpu().numpy()
+                    # find best threshold for max F1 on validation
+                    best_thresh, best_f1_val = find_best_threshold(val_probs, val_labels, metric=f1_score)
+                    inner_thresholds.append(best_thresh)
+                    print(f"[Threshold Tuning] fold {ifold}: threshold={best_thresh:.2f}, F1_val={best_f1_val:.3f}")
+            else:
+                inner_thresholds.append(0.5)
+
             # 4) Evaluate this fold on the outer test set
             encoder.eval()
             classifier.eval()
             with torch.no_grad():
+                if USE_THRESHOLD_TUNING:
+                    median_thresh = float(np.median(inner_thresholds))
+                else:
+                    median_thresh = 0.5
+                print(f"[Test Eval] using median threshold: {median_thresh:.2f}")
                 embed = encoder(X, W)
                 logits = classifier(embed, W)
                 idx_test = torch.tensor(test_mask, dtype=torch.bool, device=X.device)
                 probs = torch.softmax(logits[idx_test], dim=1)[:, 1].cpu().numpy()
                 truths = y[idx_test].cpu().numpy()
-                preds = logits[idx_test].argmax(dim=1).cpu().numpy()
+                preds = (torch.softmax(logits[idx_test], dim=1)[:, 1].cpu().numpy() >= median_thresh).astype(int)
 
                 auc = roc_auc_score(truths, probs)
                 # Store all metrics for inner-fold selection
@@ -365,15 +402,11 @@ if __name__ == '__main__':
     df_outer = pd.DataFrame(outer_fold_results)
     print(df_outer.agg(['mean','std']))
 
-    # report total execution time
-    print(f"Total execution time: {time.time() - t_total_start:.2f}s")
-
     # ----- Final summary save -----
     summary = {}
     for m in ['AUC', 'Accuracy', 'Recall', 'Specificity', 'F1']:
         summary[f'{m}_mean'] = df_outer[m].mean()
         summary[f'{m}_std'] = df_outer[m].std()
     summary_df = pd.DataFrame([summary])
-    summary_filename = f"{args.mastertable}_{args.modality}_thr{args.threshold}_final_summary.csv"
+    summary_filename = f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/results/ablation_experiments/GCNN_{args.modality}_thr{args.threshold}_final_summary.csv"
     summary_df.to_csv(summary_filename, index=False)
-    print(f"Saved final nested-CV summary to {summary_filename}")

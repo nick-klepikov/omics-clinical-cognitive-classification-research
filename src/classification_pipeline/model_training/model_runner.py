@@ -14,9 +14,7 @@ from sklearn.model_selection import ParameterGrid
 import numpy as np
 import pandas as pd
 from torch.optim import lr_scheduler
-import time
-start_time = time.time()
-# ------------ Helper for inner CV (nested param search) ------------
+
 def evaluate_config_on_fold(config, W, mastertable_file, outer_fold, param_set):
     """
     Given a config (with hyperparams set), affinity matrix W, mastertable file, outer CV fold,
@@ -62,7 +60,6 @@ def evaluate_config_on_fold(config, W, mastertable_file, outer_fold, param_set):
     # For each inner fold, train model and record val AUC
     val_aucs = []
     for fold, (train_msk, val_msk) in enumerate(zip(raw_train, raw_val)):
-        print(f"    Inner fold {fold} for outer fold {outer_fold}, config {param_set}")
         # set seeds for reproducibility
         random.seed(42)
         np.random.seed(42)
@@ -75,12 +72,7 @@ def evaluate_config_on_fold(config, W, mastertable_file, outer_fold, param_set):
         adj = adj_df
         # create data_processing
         data = create_pyg_data(adj, pd.DataFrame(data=X, columns=features_name, index=X_indices), y, train_msk, val_msk, test_mask)
-        if "GTC_uw" in config.get("model", ""):
-            data.edge_attr = torch.ones((data.edge_index.shape[1], 1), device=data.edge_index.device)
-        elif "GTC" in config.get("model", "") or "GINE" in config.get("model", ""):
-            data.edge_attr = data.edge_attr.unsqueeze(-1)
-        if "GPST" in config.get("model", ""):
-            data.x, _ = pad_features(data.x, config["heads"], features_name)
+
         # Model
         model = generate_model(config.get("model", "GCNN"), config, data)
         model.apply(init_weights)
@@ -119,7 +111,6 @@ def evaluate_config_on_fold(config, W, mastertable_file, outer_fold, param_set):
                     module.reset_parameters()
     return np.mean(val_aucs)
 
-# ------------ Argument parsing ------------
 parser = argparse.ArgumentParser(description="Train GCN on multi-omics data_processing")
 parser.add_argument('--config',      type=str, required=True, help='Path to YAML config file')
 parser.add_argument('--out_dir',     type=str, required=True, help='Directory for outputs')
@@ -144,10 +135,8 @@ device = check_cuda()
 if matplotlib.get_backend() != 'agg':
     matplotlib.use('agg')
 
-#----------------  Main function -----------------#
 if __name__ == '__main__':
     for outer_fold in range(5):
-        print(f"Starting outer fold {outer_fold}")
         # Update mastertable file and adjacency matrix path
         mastertable_file = f"{args.mastertable}_fold_{outer_fold}_thresh_{args.threshold}.csv"
         W = np.load(f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/fused_datasets/affinity_matrices/W_{args.modality}_fold_{outer_fold}_thresh_{args.threshold}.npy")
@@ -166,7 +155,6 @@ if __name__ == '__main__':
         best_auc = -np.inf
         best_params = None
         for config_idx, param_set in enumerate(param_list):
-            print(f"  Outer fold {outer_fold} – evaluating config {config_idx + 1}/{len(param_list)}: {param_set}")
             # apply param_set to config
             for k_param, v_param in param_set.items():
                 config[k_param] = v_param
@@ -232,14 +220,6 @@ if __name__ == '__main__':
         adj = adj_df
         data = create_pyg_data(adj, pd.DataFrame(data=X, columns=features_name, index=X_indices), y, train_msk, val_msk, test_mask)
 
-        if "GTC_uw" in args.model:
-            data.edge_attr = torch.ones((data.edge_index.shape[1], 1), device=data.edge_index.device)
-        elif "GTC" in args.model or "GINE" in args.model:
-            data.edge_attr = data.edge_attr.unsqueeze(-1)
-        if "GPST" in args.model:
-            data.x, feat_names = pad_features(data.x, config["heads"], feat_names)
-        # homophily_index = homophily(data_processing.edge_index, data_processing.y, method='edge')
-        # print(f'Homophily index: {homophily_index}')
         model = generate_model(args.model, config, data)
         model.apply(init_weights)
         model = model.to(device)
@@ -338,6 +318,4 @@ if __name__ == '__main__':
     with open(final_out, 'w') as f:
         yaml.safe_dump(final_params, f, default_flow_style=False)
 
-    # Print only the total elapsed time at the end
-    elapsed = time.time() - start_time
-    print(f"Total pipeline runtime: {elapsed:.1f} seconds")
+

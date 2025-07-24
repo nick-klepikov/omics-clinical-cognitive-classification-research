@@ -4,20 +4,15 @@
 from src.classification_pipeline.utils.utils import *
 from src.classification_pipeline.models.models import *
 from sklearn.utils import class_weight
-from torch import *
+import torch
 import yaml
 import os
 import argparse
 import matplotlib
-from sklearn.model_selection import StratifiedKFold
-from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.model_selection import ParameterGrid
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, ParameterGrid
 import numpy as np
 import pandas as pd
 from torch.optim import lr_scheduler
-import time
-start_time = time.time()
-# ------------ Helper for inner CV (nested param search) ------------
 def evaluate_config_on_fold(config, W, mastertable_file, outer_fold, param_set):
     """
     Given a config (with hyperparams set), affinity matrix W, mastertable file, outer CV fold,
@@ -43,12 +38,6 @@ def evaluate_config_on_fold(config, W, mastertable_file, outer_fold, param_set):
     trainval_mask = (split != "test").to_numpy()
     trainval_idx = np.where(trainval_mask)[0]
     y = mastertable["label"].astype(int).to_numpy()
-    # Print class distributions for debugging
-    from collections import Counter
-    overall_counts = Counter(y)
-    trainval_counts = Counter(y[trainval_mask])
-    test_counts = Counter(y[test_mask])
-    print(f"    Class distribution - overall: {dict(overall_counts)}, train+val: {dict(trainval_counts)}, test: {dict(test_counts)}")
     features_df = mastertable.drop(columns=["label", "split"])
     features_name = features_df.columns
     X = features_df.to_numpy()
@@ -69,7 +58,6 @@ def evaluate_config_on_fold(config, W, mastertable_file, outer_fold, param_set):
     # For each inner fold, train model and record val AUC
     val_aucs = []
     for fold, (train_msk, val_msk) in enumerate(zip(raw_train, raw_val)):
-        print(f"    Inner fold {fold} for outer fold {outer_fold}, config {param_set}")
         # set seeds for reproducibility
         random.seed(42)
         np.random.seed(42)
@@ -82,12 +70,7 @@ def evaluate_config_on_fold(config, W, mastertable_file, outer_fold, param_set):
         adj = adj_df
         # create data_processing
         data = create_pyg_data(adj, pd.DataFrame(data=X, columns=features_name, index=X_indices), y, train_msk, val_msk, test_mask)
-        if "GTC_uw" in config.get("model", ""):
-            data.edge_attr = torch.ones((data.edge_index.shape[1], 1), device=data.edge_index.device)
-        elif "GTC" in config.get("model", "") or "GINE" in config.get("model", ""):
-            data.edge_attr = data.edge_attr.unsqueeze(-1)
-        if "GPST" in config.get("model", ""):
-            data.x, _ = pad_features(data.x, config["heads"], features_name)
+
         # Model
         model = generate_model(config.get("model", "GCNN"), config, data)
         model.apply(init_weights)
@@ -131,7 +114,6 @@ def evaluate_config_on_fold(config, W, mastertable_file, outer_fold, param_set):
                     module.reset_parameters()
     return np.mean(val_aucs)
 
-# ------------ Argument parsing ------------
 parser = argparse.ArgumentParser(description="Train GCN on multi-omics data_processing")
 parser.add_argument('--config',      type=str, required=True, help='Path to YAML config file')
 parser.add_argument('--out_dir',     type=str, required=True, help='Directory for outputs')
@@ -141,7 +123,6 @@ parser.add_argument('--model', type=str, choices=["GCNN", "MLP2", "GAT", "DOS_GN
 parser.add_argument('--threshold', type=int, choices=[-2, -3, -4],  required=True, help='Threshold for binarizing MoCA change')
 args = parser.parse_args()
 
-# ------------ Load hyperparameters ------------
 with open(args.config, 'r') as f:
     config = yaml.safe_load(f)
     # Build list of hyperparameter configurations from grid
@@ -156,10 +137,8 @@ device = check_cuda()
 if matplotlib.get_backend() != 'agg':
     matplotlib.use('agg')
 
-#----------------  Main function -----------------#
 if __name__ == '__main__':
     for outer_fold in range(5):
-        print(f"Starting outer fold {outer_fold}")
         # Update mastertable file and adjacency matrix path
         mastertable_file = f"{args.mastertable}_fold_{outer_fold}_thresh_{args.threshold}.csv"
         W = np.load(f"/Users/nickq/Documents/Pioneer Academics/Research_Project/data/intermid/fused_datasets/affinity_matrices/W_{args.modality}_fold_{outer_fold}_thresh_{args.threshold}.npy")
@@ -178,7 +157,6 @@ if __name__ == '__main__':
         best_auc = -np.inf
         best_params = None
         for config_idx, param_set in enumerate(param_list):
-            print(f"  Outer fold {outer_fold} – evaluating config {config_idx + 1}/{len(param_list)}: {param_set}")
             # apply param_set to config
             for k_param, v_param in param_set.items():
                 config[k_param] = v_param
@@ -250,8 +228,6 @@ if __name__ == '__main__':
             data.edge_attr = data.edge_attr.unsqueeze(-1)
         if "GPST" in args.model:
             data.x, feat_names = pad_features(data.x, config["heads"], feat_names)
-        # homophily_index = homophily(data_processing.edge_index, data_processing.y, method='edge')
-        # print(f'Homophily index: {homophily_index}')
         model = generate_model(args.model, config, data)
         model.apply(init_weights)
         model = model.to(device)
@@ -353,10 +329,7 @@ if __name__ == '__main__':
     # include mean AUC
     final_params['mean_test_AUC'] = float(best_row['mean_auc'])
     # save final params with safe dump
-    final_out = os.path.join(OUT_DIR, "config_ablation_dos_gnn_threshold_-3.yaml")
+    final_out = os.path.join(OUT_DIR, "config_ablation.yaml")
     with open(final_out, 'w') as f:
         yaml.safe_dump(final_params, f, default_flow_style=False)
 
-    # Print only the total elapsed time at the end
-    elapsed = time.time() - start_time
-    print(f"Total pipeline runtime: {elapsed:.1f} seconds")
