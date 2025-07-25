@@ -110,8 +110,8 @@ python model_runner.py \
 `src/classification_pipeline/model_testing`
 
 **Description**  
-Evaluate trained models on the test split and generate ROC plots. Uses the same flags as the corresponding training scripts.  
-This folder also includes `graphsmote_runner.py`, implementing GraphSMOTE from Zhang et al., “GraphSMOTE: Graph-based synthetic minority over-sampling technique for imbalanced node classification” (KDD 2021, DOI:10.1145/3447548.3467435), and it uses the same configuration files as the training scripts.
+Evaluate trained models on the test split and generate ROC plots. Uses the same flags as the corresponding training scripts. This folder also includes `graphsmote_runner.py`, implementing GraphSMOTE from Zhang et al., “GraphSMOTE: Graph-based synthetic minority over-sampling technique for imbalanced node classification” (KDD 2021, DOI:10.1145/3447548.3467435), and it uses the same configuration files as the training scripts.
+
 ---
 
 ## Repository Structure
