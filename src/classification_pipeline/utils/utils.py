@@ -950,10 +950,6 @@ def get_parser():
     parser.add_argument('--dataset', type=str, default='cora')
     parser.add_argument('--size', type=int, default=100)
 
-    parser.add_argument('--batch_nums', type=int, default=6000, help='number of batches per epoch')
-    parser.add_argument('--batch_size', type=int, default=40, help='number of batches per epoch')
-
-    parser.add_argument('--imbalance', action='store_true', default=False)
 
     parser.add_argument('--opt_new_G', action='store_true',
                         default=False)  # whether optimize the decoded graph based on classification result.
