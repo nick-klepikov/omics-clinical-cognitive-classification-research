@@ -43,7 +43,7 @@ This folder also includes `dos_gnn_model_runner.py`, an implementation of DOS-GN
 
 **Usage**  
 ```bash
-python graphsmote_runner.py \
+python model_runner.py \
   --config     configs/config_ablation_threshold_-4.yaml \
   --out_dir    data/results/ablation_experiments_2      \
   --mastertable data/intermid/fused_datasets/final_mastertable \
@@ -83,7 +83,7 @@ Runs nested grid-search CV on RandomForest, SVM, and XGBoost (with optional SMOT
 
 **Usage**  
 ```bash
-python model_runner.py \
+python trad_ml_runner_and_eval.py \
   --out_dir     data/results/ablation_experiments \
   --mastertable data/intermid/fused_datasets/final_mastertable \
   --modality    fused                                             \
