@@ -2,7 +2,7 @@
 
 This repository provides three main сomponents for an end-to-end pipeline:
 1. **Pre-processing**: prepare feature matrices and affinity matrices
-2. **Graph-Based GCN Training**: training and hyperparameter tuning of a Graph Convolutional Network, additionally training, tuning, and evaluating RandomForest, SVM, and XGBoost classifiers
+2. **GCN Training**: training and hyperparameter tuning of a Graph Convolutional Network, additionally training, tuning, and evaluating RandomForest, SVM, and XGBoost classifiers
 3. **Model Testing**: evaluate GCN on a test data split
 
 ---
@@ -31,7 +31,7 @@ python preprocessing_pipeline.py
 
 ---
 
-## 2. Graph-Based GCN Training
+## 2. GCN Training
 
 **Folder**  
 `src/classification_pipeline/model_training`
@@ -146,7 +146,7 @@ Research_Project/
    - Output mastertables (feature matrices) (`.csv`) and affinity matrices (`.npy`) to `data/intermid/...`.
 
 2. **Model Training**  
-   - **Graph-Based GCN & DOS-GNN**  
+   - **GCN & DOS-GNN**  
      Run the training runners in `src/classification_pipeline/model_training` (e.g. `model_runner.py`, `dos_gnn_model_runner.py`). They read the pre-processed mastertables and write hyperparameter-tuning outputs to `data/results/...`.  
    - **Traditional ML**  
      Invoke `src/classification_pipeline/trad_ml_runner_and_eval.py` to train Random Forest, SVM, and XGBoost via nested CV. Outputs (metrics, ROC inputs, summary) appear in `data/results/...`.
