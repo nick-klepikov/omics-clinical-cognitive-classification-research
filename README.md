@@ -18,7 +18,7 @@ Outputs per-fold mastertable CSVs and affinity matrices (`.npy`), combining all 
 
 **Usage**  
 ```bash
-python preprocessing_pipeline.py
+python 1_data_extraction_and_snp_qc_univar_filter.py/
   --threshold         -5
 ```
 
